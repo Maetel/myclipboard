@@ -52,6 +52,7 @@ npm run desktop:package-macos-dmg
 앱은 입력한 Jamserver origin 아래의 `/admin/clipboard-app/v1`만 사용합니다. 로그인은 아이디·비밀번호·기기 ID를 보내며, 성공하면 90일 세션을 받습니다. 이후 요청은 그 세션을 Bearer 인증으로 전송합니다.
 
 - `POST /login`, `POST /logout`, `POST /password`, `GET /me`
-- `GET /spaces`, `POST /items`, `GET /feed`, `DELETE /items/:id`
+- `GET /spaces`, `POST /items`, `GET /feed`, `DELETE /items/:id`, `GET /items/:id/thumbnail`
+- `POST /items/:id/file-requests`, `GET /file-requests/pending`, `GET·PUT /file-requests/:id/content`
 
 서버가 로그인 세션을 폐기하거나 사용자를 중지하면 다음 동기화부터 접근이 거부됩니다. 앱은 서버 응답 본문이나 세션 원문을 로그로 남기지 않습니다.
