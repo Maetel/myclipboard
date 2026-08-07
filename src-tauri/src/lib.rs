@@ -72,6 +72,11 @@ struct LoginUser {
     display_name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ApiError {
+    error: String,
+}
+
 pub struct AppState {
     sync_lock: Mutex<()>,
 }
@@ -354,6 +359,62 @@ fn login(
     Ok(())
 }
 
+fn validate_new_password(password: &str) -> Result<(), String> {
+    let length = password.encode_utf16().count();
+    if length < 12 || length > 256 || password.chars().any(char::is_control) {
+        return Err("비밀번호는 제어 문자를 제외하고 12자 이상 입력해 주세요.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn change_password(
+    app: tauri::AppHandle,
+    current_password: String,
+    new_password: String,
+) -> Result<(), String> {
+    validate_new_password(&current_password)?;
+    validate_new_password(&new_password)?;
+    if current_password == new_password {
+        return Err("현재 비밀번호와 다른 비밀번호를 입력해 주세요.".into());
+    }
+    let settings = read_settings(&app)?;
+    let token = session_token()?;
+    if token.is_empty() {
+        return Err("다시 로그인해 주세요.".into());
+    }
+    let response = http_client()?
+        .post(endpoint(&settings.server_url, "/password")?)
+        .bearer_auth(&token)
+        .json(&json!({
+            "current_password": current_password,
+            "new_password": new_password,
+        }))
+        .send()
+        .map_err(|error| error.without_url().to_string())?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let code = response.json::<ApiError>().ok().map(|body| body.error);
+    match (status, code.as_deref()) {
+        (_, Some("current_password_invalid")) => Err("현재 비밀번호가 맞지 않습니다.".into()),
+        (_, Some("password_unchanged")) => {
+            Err("현재 비밀번호와 다른 비밀번호를 입력해 주세요.".into())
+        }
+        (_, Some("password_invalid")) => {
+            Err("비밀번호는 제어 문자를 제외하고 12자 이상 입력해 주세요.".into())
+        }
+        (reqwest::StatusCode::UNAUTHORIZED, _) => {
+            Err("로그인이 만료되었습니다. 다시 로그인해 주세요.".into())
+        }
+        (reqwest::StatusCode::TOO_MANY_REQUESTS, _) => {
+            Err("요청이 많습니다. 잠시 후 다시 시도해 주세요.".into())
+        }
+        _ => Err(format!("비밀번호를 변경하지 못했습니다. ({status})")),
+    }
+}
+
 #[tauri::command]
 fn logout(app: tauri::AppHandle) -> Result<(), String> {
     let settings = read_settings(&app)?;
@@ -420,6 +481,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_settings,
             login,
+            change_password,
             logout,
             save_preferences,
             sync_now,

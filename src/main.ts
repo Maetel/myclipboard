@@ -13,6 +13,7 @@ const element = (id: string) => document.getElementById(id) as HTMLElement;
 const loginPanel = element('loginPanel');
 const accountPanel = element('accountPanel');
 const settingsPanel = element('settingsPanel');
+const securityPanel = element('securityPanel');
 const recentPanel = element('recentPanel');
 const message = element('message');
 const connection = element('connection');
@@ -55,6 +56,7 @@ async function load() {
   loginPanel.hidden = settings.logged_in;
   accountPanel.hidden = !settings.logged_in;
   settingsPanel.hidden = !settings.logged_in;
+  securityPanel.hidden = !settings.logged_in;
   recentPanel.hidden = !settings.logged_in;
   connection.textContent = settings.logged_in ? '동기화 준비됨' : '로그인 필요';
   connection.className = settings.logged_in ? 'connection ready' : 'connection';
@@ -82,6 +84,25 @@ element('settingsForm').addEventListener('submit', async (event) => {
   } catch (error) { setMessage(String(error), true); }
 });
 
+element('passwordForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = element('passwordButton') as HTMLButtonElement;
+  const newPassword = input('newPassword').value;
+  if (newPassword !== input('newPasswordConfirm').value) {
+    setMessage('새 비밀번호 확인이 일치하지 않습니다.', true);
+    return;
+  }
+  button.disabled = true; setMessage('비밀번호를 변경하고 있습니다.');
+  try {
+    await invoke('change_password', { currentPassword: input('currentPassword').value, newPassword });
+    input('currentPassword').value = '';
+    input('newPassword').value = '';
+    input('newPasswordConfirm').value = '';
+    setMessage('비밀번호를 변경했습니다. 다른 기기에서는 다시 로그인해 주세요.');
+  } catch (error) { setMessage(String(error), true); }
+  finally { button.disabled = false; }
+});
+
 element('resetShortcut').addEventListener('click', () => { input('shortcut').value = 'Ctrl+Shift+V'; });
 element('syncNow').addEventListener('click', async () => {
   setMessage('동기화하고 있습니다.');
@@ -100,4 +121,3 @@ void listen<string>('sync-status', (event) => {
 });
 void listen('clipboard-updated', () => void refreshHistory());
 void load().catch((error) => setMessage(String(error), true));
-
