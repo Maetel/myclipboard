@@ -35,7 +35,7 @@ const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: usize = 50_000_000;
 const FILE_WAIT_SECONDS: u64 = 45;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClipboardItem {
     pub seq: i64,
     pub id: String,
@@ -54,7 +54,7 @@ pub struct ClipboardItem {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct PendingItem {
     client_event_id: String,
     kind: String,
@@ -73,7 +73,7 @@ struct PendingItem {
     created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct LocalSource {
     item_id: String,
     path: PathBuf,
@@ -83,7 +83,7 @@ struct LocalSource {
     managed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 struct LocalState {
     cursor: i64,
     #[serde(default)]
@@ -144,6 +144,23 @@ fn foreground() -> &'static Mutex<ForegroundTarget> {
 }
 fn last_applied_hash() -> &'static Mutex<Option<(String, Instant)>> {
     LAST_APPLIED_HASH.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_change_marker() -> Option<u64> {
+    let marker = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+    (marker != 0).then_some(marker as u64)
+}
+
+#[cfg(target_os = "macos")]
+fn clipboard_change_marker() -> Option<u64> {
+    let marker = objc2_app_kit::NSPasteboard::generalPasteboard().changeCount();
+    (marker >= 0).then_some(marker as u64)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn clipboard_change_marker() -> Option<u64> {
+    None
 }
 
 pub fn validate_shortcut(value: &str) -> Result<(), String> {
@@ -422,6 +439,7 @@ fn sync_once(
         ));
     }
     let mut state = load_state(app).unwrap_or_default();
+    let previous_state = state.clone();
     let mut pending = Vec::new();
     for item in state.pending.clone() {
         match publish(client, settings, token, &item) {
@@ -485,8 +503,10 @@ fn sync_once(
     state.items.truncate(MAX_ITEMS);
     clean_local_sources(&mut state);
     let _ = fulfill_file_requests(client, settings, token, &state);
-    save_state(app, &state)?;
-    let _ = app.emit("clipboard-updated", ());
+    if state != previous_state {
+        save_state(app, &state)?;
+        let _ = app.emit("clipboard-updated", ());
+    }
     Ok(())
 }
 
@@ -776,6 +796,7 @@ pub fn start_monitor(app: tauri::AppHandle) {
             .checked_sub(Duration::from_secs(5))
             .unwrap_or_else(Instant::now);
         let mut last_hash = String::new();
+        let mut last_clipboard_marker = None;
         let mut server_ready = false;
         loop {
             let settings = match super::read_settings(&app) {
@@ -807,7 +828,10 @@ pub fn start_monitor(app: tauri::AppHandle) {
                     );
                     last_sync = Instant::now();
                 }
-                if server_ready {
+                let marker = clipboard_change_marker();
+                let clipboard_changed = marker.is_none() || marker != last_clipboard_marker;
+                if server_ready && clipboard_changed {
+                    last_clipboard_marker = marker;
                     if let Err(error) =
                         capture_local(&app, &client, &settings, &token, &mut last_hash)
                     {
