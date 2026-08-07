@@ -28,6 +28,13 @@ npm run desktop:build
 ```
 
 Windows에서는 NSIS 설치 파일, macOS에서는 `.app`과 `.dmg`를 만듭니다. macOS 배포본은 실제 배포 전에 Developer ID 서명과 notarization이 필요합니다.
+배포용 macOS DMG는 아래 명령으로 다시 패키징합니다. DMG 안에는 앱과
+`Applications` 폴더 바로가기가 함께 들어가므로 앱을 바로가기로 드래그해
+설치할 수 있습니다.
+
+```bash
+npm run desktop:package-macos-dmg
+```
 
 ## 서버 연동 방식
 
@@ -37,4 +44,3 @@ Windows에서는 NSIS 설치 파일, macOS에서는 `.app`과 `.dmg`를 만듭�
 - `GET /spaces`, `POST /items`, `GET /feed`, `DELETE /items/:id`
 
 서버가 로그인 세션을 폐기하거나 사용자를 중지하면 다음 동기화부터 접근이 거부됩니다. 앱은 서버 응답 본문이나 세션 원문을 로그로 남기지 않습니다.
-
