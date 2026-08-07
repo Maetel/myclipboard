@@ -297,7 +297,7 @@ fn publish(
         .send()
         .map_err(|error| error.without_url().to_string())?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("로그인이 만료되었습니다.".into());
+        return Err(super::AUTH_REQUIRED.into());
     }
     if !response.status().is_success() {
         return Err(format!(
@@ -342,6 +342,9 @@ fn fulfill_file_requests(
         .bearer_auth(token)
         .send()
         .map_err(|error| error.without_url().to_string())?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(super::AUTH_REQUIRED.into());
+    }
     if !response.status().is_success() {
         return Err(format!(
             "파일 요청을 확인하지 못했습니다. ({})",
@@ -410,7 +413,7 @@ fn sync_once(
         .send()
         .map_err(|error| error.without_url().to_string())?;
     if spaces.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("로그인이 만료되었습니다.".into());
+        return Err(super::AUTH_REQUIRED.into());
     }
     if !spaces.status().is_success() {
         return Err(format!(
@@ -448,7 +451,7 @@ fn sync_once(
             .send()
             .map_err(|error| error.without_url().to_string())?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err("로그인이 만료되었습니다.".into());
+            return Err(super::AUTH_REQUIRED.into());
         }
         if !response.status().is_success() {
             return Err(format!(
@@ -789,8 +792,11 @@ pub fn start_monitor(app: tauri::AppHandle) {
                         .get_or_init(|| Mutex::new(()))
                         .try_lock()
                         .ok()
-                        .and_then(|_guard| sync_once(&app, &client, &settings, &token).ok());
-                    server_ready = result.is_some();
+                        .map(|_guard| sync_once(&app, &client, &settings, &token));
+                    if matches!(&result, Some(Err(error)) if error == super::AUTH_REQUIRED) {
+                        super::clear_local_auth(&app);
+                    }
+                    server_ready = matches!(result, Some(Ok(())));
                     let _ = app.emit(
                         "sync-status",
                         if server_ready {

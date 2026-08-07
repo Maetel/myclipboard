@@ -120,5 +120,9 @@ void listen<string>('sync-status', (event) => {
   connection.textContent = event.payload;
   connection.className = event.payload === '동기화됨' ? 'connection ready' : 'connection';
 });
+void listen('auth-required', () => {
+  setMessage('로그인이 만료되었습니다. 다시 로그인해 주세요.', true);
+  void load();
+});
 void listen('clipboard-updated', () => void refreshHistory());
 void load().catch((error) => setMessage(String(error), true));

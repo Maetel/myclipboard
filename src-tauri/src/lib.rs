@@ -22,6 +22,7 @@ const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+V";
 const KEYRING_SERVICE: &str = "my.memos.clipboard";
 const SESSION_KEY: &str = "session-token";
 const HISTORY_KEY: &str = "history-key";
+pub(crate) const AUTH_REQUIRED: &str = "auth_required";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -123,13 +124,13 @@ fn get_secret(account: &str) -> Result<String, String> {
 }
 
 fn delete_secret(account: &str) -> Result<(), String> {
+    *secret_cache(account)
+        .lock()
+        .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())? = String::new();
     match keyring_entry(account)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(_) => return Err("운영체제 보안 저장소에서 삭제할 수 없습니다.".into()),
     }
-    *secret_cache(account)
-        .lock()
-        .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())? = String::new();
     Ok(())
 }
 
@@ -306,15 +307,41 @@ pub(crate) fn file_http_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|_| "파일 전송을 준비할 수 없습니다.".to_string())
 }
 
+pub(crate) fn clear_local_auth(app: &tauri::AppHandle) {
+    let _ = delete_secret(SESSION_KEY);
+    let _ = clipboard::purge_local(app);
+    if let Ok(mut settings) = read_settings(app) {
+        settings.username.clear();
+        settings.display_name.clear();
+        let _ = write_settings(app, &settings);
+    }
+    let _ = app.global_shortcut().unregister_all();
+    let _ = app.emit("auth-required", ());
+}
+
 #[tauri::command]
 fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
-    let settings = read_settings(&app)?;
+    let mut settings = read_settings(&app)?;
+    let mut token = session_token()?;
+    if !token.is_empty() {
+        let unauthorized = http_client()
+            .and_then(|client| endpoint(&settings.server_url, "/me").map(|url| (client, url)))
+            .ok()
+            .and_then(|(client, url)| client.get(url).bearer_auth(&token).send().ok())
+            .is_some_and(|response| response.status() == reqwest::StatusCode::UNAUTHORIZED);
+        if unauthorized {
+            clear_local_auth(&app);
+            token.clear();
+            settings.username.clear();
+            settings.display_name.clear();
+        }
+    }
     Ok(PublicSettings {
         server_url: settings.server_url,
         username: settings.username,
         display_name: settings.display_name,
         device_name: settings.device_name,
-        logged_in: !session_token()?.is_empty(),
+        logged_in: !token.is_empty(),
         enabled: settings.enabled,
         shortcut: settings.shortcut,
     })
@@ -428,7 +455,7 @@ fn change_password(
 #[tauri::command]
 fn logout(app: tauri::AppHandle) -> Result<(), String> {
     let settings = read_settings(&app)?;
-    let token = session_token()?;
+    let token = session_token().unwrap_or_default();
     if !token.is_empty() {
         if let Ok(client) = http_client() {
             if let Ok(url) = endpoint(&settings.server_url, "/logout") {
@@ -436,13 +463,7 @@ fn logout(app: tauri::AppHandle) -> Result<(), String> {
             }
         }
     }
-    delete_secret(SESSION_KEY)?;
-    clipboard::purge_local(&app)?;
-    let mut next = settings;
-    next.username.clear();
-    next.display_name.clear();
-    write_settings(&app, &next)?;
-    let _ = app.global_shortcut().unregister_all();
+    clear_local_auth(&app);
     Ok(())
 }
 
