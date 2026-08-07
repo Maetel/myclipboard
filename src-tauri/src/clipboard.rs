@@ -1,10 +1,15 @@
 use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+use arboard::{Clipboard, ImageData};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use image::{DynamicImage, ImageFormat, RgbaImage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     fs,
-    path::PathBuf,
+    io::Cursor,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex, OnceLock,
@@ -26,6 +31,9 @@ use super::Settings;
 const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+V";
 const MAX_ITEMS: usize = 500;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
+const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_IMAGE_PIXELS: usize = 50_000_000;
+const FILE_WAIT_SECONDS: u64 = 45;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardItem {
@@ -35,6 +43,14 @@ pub struct ClipboardItem {
     pub origin_device_id: String,
     pub kind: String,
     pub text: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    #[serde(default)]
+    pub thumbnail_available: bool,
     pub created_at: String,
 }
 
@@ -43,8 +59,28 @@ struct PendingItem {
     client_event_id: String,
     kind: String,
     text: String,
+    #[serde(default)]
+    filename: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    size_bytes: Option<u64>,
+    #[serde(default)]
+    thumbnail_base64: Option<String>,
+    #[serde(default)]
+    thumbnail_mime_type: Option<String>,
     local_id: String,
     created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalSource {
+    item_id: String,
+    path: PathBuf,
+    size_bytes: u64,
+    sha256: String,
+    #[serde(default)]
+    managed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -54,6 +90,8 @@ struct LocalState {
     items: Vec<ClipboardItem>,
     #[serde(default)]
     pending: Vec<PendingItem>,
+    #[serde(default)]
+    sources: Vec<LocalSource>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +100,29 @@ struct Feed {
     next_cursor: i64,
     #[serde(default)]
     has_more: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct PendingFileRequests {
+    requests: Vec<PendingFileRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PendingFileRequest {
+    request_id: String,
+    item_id: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileRequestCreated {
+    request_id: String,
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileRequestStatus {
+    status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +199,18 @@ fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(root(app)?.join("history.enc"))
 }
 
+fn managed_sources_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let path = root(app)?.join("sources");
+    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn downloads_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let path = root(app)?.join("downloads");
+    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -176,7 +249,7 @@ fn save_state(app: &tauri::AppHandle, state: &LocalState) -> Result<(), String> 
 
 pub fn purge_local(app: &tauri::AppHandle) -> Result<(), String> {
     hide_popup(app);
-    match fs::remove_file(state_path(app)?) {
+    match fs::remove_dir_all(root(app)?) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
@@ -196,9 +269,33 @@ fn publish(
     token: &str,
     pending: &PendingItem,
 ) -> Result<ClipboardItem, String> {
-    let response=client.post(super::endpoint(&settings.server_url,"/items")?).bearer_auth(token).json(&json!({
+    let mut body = json!({
         "client_event_id":pending.client_event_id,"space_id":"personal","kind":pending.kind,"text":pending.text,
-    })).send().map_err(|error|error.without_url().to_string())?;
+    });
+    let object = body
+        .as_object_mut()
+        .expect("clipboard item body is an object");
+    if let Some(value) = &pending.filename {
+        object.insert("filename".into(), json!(value));
+    }
+    if let Some(value) = &pending.mime_type {
+        object.insert("mime_type".into(), json!(value));
+    }
+    if let Some(value) = pending.size_bytes {
+        object.insert("size_bytes".into(), json!(value));
+    }
+    if let Some(value) = &pending.thumbnail_base64 {
+        object.insert("thumbnail_base64".into(), json!(value));
+    }
+    if let Some(value) = &pending.thumbnail_mime_type {
+        object.insert("thumbnail_mime_type".into(), json!(value));
+    }
+    let response = client
+        .post(super::endpoint(&settings.server_url, "/items")?)
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .map_err(|error| error.without_url().to_string())?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Err("로그인이 만료되었습니다.".into());
     }
@@ -211,6 +308,94 @@ fn publish(
     response
         .json()
         .map_err(|_| "클립보드 전송 응답이 올바르지 않습니다.".into())
+}
+
+fn source_bytes(source: &LocalSource, expected_size: u64) -> Result<Vec<u8>, String> {
+    let metadata =
+        fs::metadata(&source.path).map_err(|_| "원본 파일을 찾을 수 없습니다.".to_string())?;
+    if !metadata.is_file()
+        || metadata.len() != source.size_bytes
+        || metadata.len() != expected_size
+        || metadata.len() == 0
+        || metadata.len() > MAX_FILE_BYTES as u64
+    {
+        return Err("원본 파일이 복사한 뒤 변경되었거나 크기 제한을 넘었습니다.".into());
+    }
+    let bytes = fs::read(&source.path).map_err(|_| "원본 파일을 읽을 수 없습니다.".to_string())?;
+    if hex(&Sha256::digest(&bytes)) != source.sha256 {
+        return Err("원본 파일이 복사한 뒤 변경되었습니다.".into());
+    }
+    Ok(bytes)
+}
+
+fn fulfill_file_requests(
+    client: &reqwest::blocking::Client,
+    settings: &Settings,
+    token: &str,
+    state: &LocalState,
+) -> Result<(), String> {
+    let response = client
+        .get(super::endpoint(
+            &settings.server_url,
+            "/file-requests/pending",
+        )?)
+        .bearer_auth(token)
+        .send()
+        .map_err(|error| error.without_url().to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "파일 요청을 확인하지 못했습니다. ({})",
+            response.status()
+        ));
+    }
+    let pending: PendingFileRequests = response
+        .json()
+        .map_err(|_| "파일 요청 응답이 올바르지 않습니다.".to_string())?;
+    for request in pending.requests {
+        let Some(source) = state
+            .sources
+            .iter()
+            .find(|source| source.item_id == request.item_id)
+        else {
+            continue;
+        };
+        let Ok(bytes) = source_bytes(source, request.size_bytes) else {
+            continue;
+        };
+        let response = super::file_http_client()?
+            .put(super::endpoint(
+                &settings.server_url,
+                &format!("/file-requests/{}/content", request.request_id),
+            )?)
+            .bearer_auth(token)
+            .header("content-type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .map_err(|error| error.without_url().to_string())?;
+        if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
+            return Err(format!(
+                "파일을 전송하지 못했습니다. ({})",
+                response.status()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn clean_local_sources(state: &mut LocalState) {
+    let active = state
+        .items
+        .iter()
+        .map(|item| item.id.clone())
+        .chain(state.pending.iter().map(|item| item.local_id.clone()))
+        .collect::<Vec<_>>();
+    state.sources.retain(|source| {
+        let keep = active.contains(&source.item_id) && source.path.is_file();
+        if !keep && source.managed {
+            let _ = fs::remove_file(&source.path);
+        }
+        keep
+    });
 }
 
 fn sync_once(
@@ -235,15 +420,20 @@ fn sync_once(
     }
     let mut state = load_state(app).unwrap_or_default();
     let mut pending = Vec::new();
-    for item in &state.pending {
-        match publish(client, settings, token, item) {
+    for item in state.pending.clone() {
+        match publish(client, settings, token, &item) {
             Ok(value) => {
                 state
                     .items
                     .retain(|existing| existing.id != item.local_id && existing.id != value.id);
+                for source in &mut state.sources {
+                    if source.item_id == item.local_id {
+                        source.item_id = value.id.clone();
+                    }
+                }
                 state.items.insert(0, value)
             }
-            Err(_) => pending.push(item.clone()),
+            Err(_) => pending.push(item),
         }
     }
     state.pending = pending;
@@ -290,6 +480,8 @@ fn sync_once(
         }
     }
     state.items.truncate(MAX_ITEMS);
+    clean_local_sources(&mut state);
+    let _ = fulfill_file_requests(client, settings, token, &state);
     save_state(app, &state)?;
     let _ = app.emit("clipboard-updated", ());
     Ok(())
@@ -327,44 +519,93 @@ fn classify(text: &str) -> &'static str {
     }
 }
 
-fn capture_local(
-    app: &tauri::AppHandle,
-    client: &reqwest::blocking::Client,
-    settings: &Settings,
-    token: &str,
-    last_hash: &mut String,
-) -> Result<(), String> {
-    let Some(text) = read_clipboard()? else {
-        return Ok(());
+fn thumbnail_base64(image: &DynamicImage) -> Option<String> {
+    if image.width() as usize * image.height() as usize > MAX_IMAGE_PIXELS {
+        return None;
+    }
+    let thumbnail = image.thumbnail(256, 256).to_rgb8();
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 72)
+        .encode_image(&thumbnail)
+        .ok()?;
+    (bytes.len() <= 256 * 1024).then(|| BASE64.encode(bytes))
+}
+
+fn image_from_clipboard() -> Option<DynamicImage> {
+    let image = Clipboard::new().ok()?.get_image().ok()?;
+    if image.width == 0
+        || image.height == 0
+        || image.width.checked_mul(image.height)? > MAX_IMAGE_PIXELS
+        || image.bytes.len() != image.width.checked_mul(image.height)?.checked_mul(4)?
+    {
+        return None;
+    }
+    RgbaImage::from_raw(
+        image.width as u32,
+        image.height as u32,
+        image.bytes.into_owned(),
+    )
+    .map(DynamicImage::ImageRgba8)
+}
+
+fn file_details(path: &Path) -> Result<(String, String, u64, String, Option<String>), String> {
+    let metadata = fs::metadata(path).map_err(|_| "복사한 파일을 읽을 수 없습니다.".to_string())?;
+    if !metadata.is_file() {
+        return Err("폴더 붙여넣기는 아직 지원하지 않습니다.".into());
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES as u64 {
+        return Err("파일은 10MB 이하만 공유할 수 있습니다.".into());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "파일 이름을 읽을 수 없습니다.".to_string())?
+        .to_string();
+    let bytes = fs::read(path).map_err(|_| "복사한 파일을 읽을 수 없습니다.".to_string())?;
+    let hash = hex(&Sha256::digest(&bytes));
+    let mime = mime_guess::from_path(path)
+        .first_or_octet_stream()
+        .essence_str()
+        .to_string();
+    let thumbnail = if mime.starts_with("image/") {
+        image::open(path)
+            .ok()
+            .and_then(|image| thumbnail_base64(&image))
+    } else {
+        None
     };
-    if text.is_empty() || text.len() > MAX_TEXT_BYTES || text.contains('\0') {
-        return Ok(());
-    }
-    let hash = hex(&Sha256::digest(text.as_bytes()));
+    Ok((filename, mime, metadata.len(), hash, thumbnail))
+}
+
+fn should_capture(hash: &str, last_hash: &mut String) -> bool {
     if hash == *last_hash {
-        return Ok(());
+        return false;
     }
-    *last_hash = hash.clone();
-    if last_applied_hash()
+    *last_hash = hash.to_string();
+    !last_applied_hash()
         .lock()
         .ok()
         .and_then(|value| value.clone())
         .is_some_and(|(applied, at)| applied == hash && at.elapsed() < Duration::from_secs(3))
-    {
-        return Ok(());
-    }
-    let client_event_id = random_event_id()?;
-    let pending = PendingItem {
-        local_id: format!("local_{client_event_id}"),
-        client_event_id,
-        kind: classify(&text).into(),
-        text,
-        created_at: chrono::Utc::now().to_rfc3339(),
-    };
+}
+
+fn store_capture(
+    app: &tauri::AppHandle,
+    client: &reqwest::blocking::Client,
+    settings: &Settings,
+    token: &str,
+    pending: PendingItem,
+    source: Option<LocalSource>,
+) -> Result<(), String> {
     let mut state = load_state(app).unwrap_or_default();
     match publish(client, settings, token, &pending) {
         Ok(value) => {
             state.items.retain(|item| item.id != value.id);
+            if let Some(mut source) = source {
+                source.item_id = value.id.clone();
+                state.sources.push(source);
+            }
             state.items.insert(0, value)
         }
         Err(_) => {
@@ -377,16 +618,150 @@ fn capture_local(
                     origin_device_id: settings.device_id.clone(),
                     kind: pending.kind.clone(),
                     text: pending.text.clone(),
+                    filename: pending.filename.clone(),
+                    mime_type: pending.mime_type.clone(),
+                    size_bytes: pending.size_bytes,
+                    thumbnail_available: pending.thumbnail_base64.is_some(),
                     created_at: pending.created_at.clone(),
                 },
             );
+            if let Some(source) = source {
+                state.sources.push(source);
+            }
             state.pending.push(pending)
         }
     }
     state.items.truncate(MAX_ITEMS);
+    clean_local_sources(&mut state);
     save_state(app, &state)?;
     let _ = app.emit("clipboard-updated", ());
     Ok(())
+}
+
+fn capture_local(
+    app: &tauri::AppHandle,
+    client: &reqwest::blocking::Client,
+    settings: &Settings,
+    token: &str,
+    last_hash: &mut String,
+) -> Result<(), String> {
+    if let Some(path) = read_file_clipboard()? {
+        let (filename, mime, size, digest, thumbnail) = file_details(&path)?;
+        let hash = format!("file:{digest}");
+        if !should_capture(&hash, last_hash) {
+            return Ok(());
+        }
+        let client_event_id = random_event_id()?;
+        let local_id = format!("local_{client_event_id}");
+        return store_capture(
+            app,
+            client,
+            settings,
+            token,
+            PendingItem {
+                local_id: local_id.clone(),
+                client_event_id,
+                kind: "file".into(),
+                text: filename.clone(),
+                filename: Some(filename),
+                mime_type: Some(mime),
+                size_bytes: Some(size),
+                thumbnail_base64: thumbnail.clone(),
+                thumbnail_mime_type: thumbnail.map(|_| "image/jpeg".into()),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+            Some(LocalSource {
+                item_id: local_id,
+                path,
+                size_bytes: size,
+                sha256: digest,
+                managed: false,
+            }),
+        );
+    }
+    if let Some(text) = read_clipboard()? {
+        if !text.is_empty() && text.len() <= MAX_TEXT_BYTES && !text.contains('\0') {
+            let hash = format!("text:{}", hex(&Sha256::digest(text.as_bytes())));
+            if !should_capture(&hash, last_hash) {
+                return Ok(());
+            }
+            let client_event_id = random_event_id()?;
+            return store_capture(
+                app,
+                client,
+                settings,
+                token,
+                PendingItem {
+                    local_id: format!("local_{client_event_id}"),
+                    client_event_id,
+                    kind: classify(&text).into(),
+                    text,
+                    filename: None,
+                    mime_type: None,
+                    size_bytes: None,
+                    thumbnail_base64: None,
+                    thumbnail_mime_type: None,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                },
+                None,
+            );
+        }
+    }
+    let Some(image) = image_from_clipboard() else {
+        return Ok(());
+    };
+    let rgba = image.to_rgba8();
+    let digest = hex(&Sha256::digest(rgba.as_raw()));
+    let hash = format!("image:{digest}");
+    if !should_capture(&hash, last_hash) {
+        return Ok(());
+    }
+    let client_event_id = random_event_id()?;
+    let local_id = format!("local_{client_event_id}");
+    let filename = format!(
+        "clipboard-image-{}.png",
+        chrono::Utc::now().timestamp_millis()
+    );
+    let mut cursor = Cursor::new(Vec::new());
+    image
+        .write_to(&mut cursor, ImageFormat::Png)
+        .map_err(|_| "이미지를 준비할 수 없습니다.".to_string())?;
+    let bytes = cursor.into_inner();
+    if bytes.is_empty() || bytes.len() > MAX_FILE_BYTES {
+        return Err("이미지는 10MB 이하만 공유할 수 있습니다.".into());
+    }
+    let path = managed_sources_dir(app)?.join(&filename);
+    super::atomic_write(&path, &bytes)?;
+    let thumbnail = thumbnail_base64(&DynamicImage::ImageRgba8(rgba));
+    let result = store_capture(
+        app,
+        client,
+        settings,
+        token,
+        PendingItem {
+            local_id: local_id.clone(),
+            client_event_id,
+            kind: "image".into(),
+            text: filename.clone(),
+            filename: Some(filename),
+            mime_type: Some("image/png".into()),
+            size_bytes: Some(bytes.len() as u64),
+            thumbnail_base64: thumbnail.clone(),
+            thumbnail_mime_type: thumbnail.map(|_| "image/jpeg".into()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        },
+        Some(LocalSource {
+            item_id: local_id,
+            path: path.clone(),
+            size_bytes: bytes.len() as u64,
+            sha256: hex(&Sha256::digest(&bytes)),
+            managed: true,
+        }),
+    );
+    if result.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    result
 }
 
 pub fn start_monitor(app: tauri::AppHandle) {
@@ -427,7 +802,11 @@ pub fn start_monitor(app: tauri::AppHandle) {
                     last_sync = Instant::now();
                 }
                 if server_ready {
-                    let _ = capture_local(&app, &client, &settings, &token, &mut last_hash);
+                    if let Err(error) =
+                        capture_local(&app, &client, &settings, &token, &mut last_hash)
+                    {
+                        let _ = app.emit("sync-status", error);
+                    }
                 }
                 thread::sleep(Duration::from_millis(500));
             } else {
@@ -479,15 +858,190 @@ pub fn clipboard_dismiss(app: tauri::AppHandle) {
 pub fn clipboard_history(app: tauri::AppHandle) -> Result<Vec<ClipboardItem>, String> {
     Ok(load_state(&app).unwrap_or_default().items)
 }
+
 #[tauri::command]
-pub fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let item = load_state(&app)?
+pub fn clipboard_thumbnail(app: tauri::AppHandle, id: String) -> Result<Option<String>, String> {
+    let state = load_state(&app).unwrap_or_default();
+    if let Some(pending) = state.pending.iter().find(|item| item.local_id == id) {
+        return Ok(pending.thumbnail_base64.as_ref().map(|value| {
+            format!(
+                "data:{};base64,{}",
+                pending
+                    .thumbnail_mime_type
+                    .as_deref()
+                    .unwrap_or("image/jpeg"),
+                value
+            )
+        }));
+    }
+    let item = state
         .items
-        .into_iter()
+        .iter()
         .find(|item| item.id == id)
         .ok_or_else(|| "클립보드 항목을 찾을 수 없습니다.".to_string())?;
-    write_clipboard(&item.text)?;
-    let hash = hex(&Sha256::digest(item.text.as_bytes()));
+    if !item.thumbnail_available {
+        return Ok(None);
+    }
+    let settings = super::read_settings(&app)?;
+    let token = super::session_token()?;
+    let response = super::http_client()?
+        .get(super::endpoint(
+            &settings.server_url,
+            &format!("/items/{id}/thumbnail"),
+        )?)
+        .bearer_auth(token)
+        .send()
+        .map_err(|error| error.without_url().to_string())?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err("썸네일을 불러오지 못했습니다.".into());
+    }
+    let mime = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| matches!(*value, "image/jpeg" | "image/png"))
+        .ok_or_else(|| "썸네일 형식이 올바르지 않습니다.".to_string())?
+        .to_string();
+    let bytes = response
+        .bytes()
+        .map_err(|_| "썸네일을 읽지 못했습니다.".to_string())?;
+    if bytes.len() > 256 * 1024 {
+        return Err("썸네일이 너무 큽니다.".into());
+    }
+    Ok(Some(format!("data:{mime};base64,{}", BASE64.encode(bytes))))
+}
+
+fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>, String> {
+    let settings = super::read_settings(app)?;
+    let token = super::session_token()?;
+    let client = super::file_http_client()?;
+    let created = client
+        .post(super::endpoint(
+            &settings.server_url,
+            &format!("/items/{}/file-requests", item.id),
+        )?)
+        .bearer_auth(&token)
+        .send()
+        .map_err(|error| error.without_url().to_string())?;
+    if !created.status().is_success() {
+        return Err(format!(
+            "파일을 요청하지 못했습니다. ({})",
+            created.status()
+        ));
+    }
+    let created: FileRequestCreated = created
+        .json()
+        .map_err(|_| "파일 요청 응답이 올바르지 않습니다.".to_string())?;
+    let started = Instant::now();
+    let mut status = created.status;
+    while status == "pending" && started.elapsed() < Duration::from_secs(FILE_WAIT_SECONDS) {
+        thread::sleep(Duration::from_secs(1));
+        let response = client
+            .get(super::endpoint(
+                &settings.server_url,
+                &format!("/file-requests/{}", created.request_id),
+            )?)
+            .bearer_auth(&token)
+            .send()
+            .map_err(|error| error.without_url().to_string())?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err("파일 요청 시간이 지났습니다.".into());
+        }
+        if !response.status().is_success() {
+            return Err("파일 전송 상태를 확인하지 못했습니다.".into());
+        }
+        status = response
+            .json::<FileRequestStatus>()
+            .map_err(|_| "파일 전송 상태가 올바르지 않습니다.".to_string())?
+            .status;
+    }
+    if !matches!(status.as_str(), "ready" | "consumed") {
+        return Err(
+            "원본 기기가 응답하지 않습니다. 원본 기기에서 앱이 실행 중인지 확인해 주세요.".into(),
+        );
+    }
+    let response = client
+        .get(super::endpoint(
+            &settings.server_url,
+            &format!("/file-requests/{}/content", created.request_id),
+        )?)
+        .bearer_auth(&token)
+        .send()
+        .map_err(|error| error.without_url().to_string())?;
+    if !response.status().is_success() {
+        return Err("파일을 내려받지 못했습니다.".into());
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|_| "파일을 내려받지 못했습니다.".to_string())?
+        .to_vec();
+    if bytes.is_empty()
+        || bytes.len() > MAX_FILE_BYTES
+        || item
+            .size_bytes
+            .is_some_and(|size| size != bytes.len() as u64)
+    {
+        return Err("받은 파일 크기가 올바르지 않습니다.".into());
+    }
+    Ok(bytes)
+}
+
+fn write_image_clipboard(bytes: &[u8]) -> Result<String, String> {
+    let image = image::load_from_memory(bytes)
+        .map_err(|_| "받은 이미지를 열 수 없습니다.".to_string())?
+        .to_rgba8();
+    let hash = format!("image:{}", hex(&Sha256::digest(image.as_raw())));
+    Clipboard::new()
+        .and_then(|mut clipboard| {
+            clipboard.set_image(ImageData {
+                width: image.width() as usize,
+                height: image.height() as usize,
+                bytes: Cow::Owned(image.into_raw()),
+            })
+        })
+        .map_err(|_| "이미지를 클립보드에 넣지 못했습니다.".to_string())?;
+    Ok(hash)
+}
+
+#[tauri::command]
+pub fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let state = load_state(&app)?;
+    let item = state
+        .items
+        .iter()
+        .find(|item| item.id == id)
+        .cloned()
+        .ok_or_else(|| "클립보드 항목을 찾을 수 없습니다.".to_string())?;
+    let hash = if matches!(item.kind.as_str(), "file" | "image") {
+        let source = state
+            .sources
+            .iter()
+            .find(|source| source.item_id == item.id);
+        let bytes = if let Some(source) = source {
+            source_bytes(source, item.size_bytes.unwrap_or(source.size_bytes))?
+        } else {
+            let settings = super::read_settings(&app)?;
+            if item.origin_device_id == settings.device_id {
+                return Err("원본 파일을 찾을 수 없습니다. 파일을 다시 복사해 주세요.".into());
+            }
+            request_file(&app, &item)?
+        };
+        if item.kind == "image" {
+            write_image_clipboard(&bytes)?
+        } else {
+            let filename = item.filename.as_deref().unwrap_or(&item.text);
+            let path = downloads_dir(&app)?.join(format!("{}-{filename}", item.id));
+            super::atomic_write(&path, &bytes)?;
+            write_file_clipboard(&path)?;
+            format!("file:{}", hex(&Sha256::digest(&bytes)))
+        }
+    } else {
+        write_clipboard(&item.text)?;
+        format!("text:{}", hex(&Sha256::digest(item.text.as_bytes())))
+    };
     if let Ok(mut value) = last_applied_hash().lock() {
         *value = Some((hash, Instant::now()))
     }
@@ -497,6 +1051,39 @@ pub fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn read_file_clipboard() -> Result<Option<PathBuf>, String> {
+    let script = "ObjC.import('AppKit');function run(){const p=$.NSPasteboard.generalPasteboard;const v=p.readObjectsForClassesOptions([$.NSURL],{NSPasteboardURLReadingFileURLsOnlyKey:true});if(!v||Number(v.count)!==1)return '';return ObjC.unwrap(v.objectAtIndex(0).path)}";
+    let output = Command::new("/usr/bin/osascript")
+        .args(["-l", "JavaScript", "-e", script])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!path.is_empty()).then(|| PathBuf::from(path)))
+}
+#[cfg(target_os = "macos")]
+fn write_file_clipboard(path: &Path) -> Result<(), String> {
+    let script = "ObjC.import('AppKit');function run(argv){const p=$.NSPasteboard.generalPasteboard;p.clearContents;return p.writeObjects([$.NSURL.fileURLWithPath($(argv[0]))])?'ok':'fail'}";
+    let output = Command::new("/usr/bin/osascript")
+        .args([
+            "-l",
+            "JavaScript",
+            "-e",
+            script,
+            "--",
+            &path.to_string_lossy(),
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "ok" {
+        Ok(())
+    } else {
+        Err("파일을 클립보드에 넣지 못했습니다.".into())
+    }
+}
 #[cfg(target_os = "macos")]
 fn read_clipboard() -> Result<Option<String>, String> {
     let output = Command::new("/usr/bin/pbpaste")
@@ -561,6 +1148,96 @@ fn paste_to_foreground() {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn read_file_clipboard() -> Result<Option<PathBuf>, String> {
+    use windows_sys::Win32::{
+        System::{
+            DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
+            Ole::CF_HDROP,
+        },
+        UI::Shell::DragQueryFileW,
+    };
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Ok(None);
+        }
+        let handle = GetClipboardData(CF_HDROP as u32);
+        if handle.is_null() {
+            CloseClipboard();
+            return Ok(None);
+        }
+        let count = DragQueryFileW(handle, u32::MAX, std::ptr::null_mut(), 0);
+        if count != 1 {
+            CloseClipboard();
+            return Ok(None);
+        }
+        let length = DragQueryFileW(handle, 0, std::ptr::null_mut(), 0);
+        let mut path = vec![0_u16; length as usize + 1];
+        let copied = DragQueryFileW(handle, 0, path.as_mut_ptr(), path.len() as u32);
+        CloseClipboard();
+        if copied == 0 {
+            return Ok(None);
+        }
+        path.truncate(copied as usize);
+        Ok(Some(PathBuf::from(String::from_utf16_lossy(&path))))
+    }
+}
+#[cfg(target_os = "windows")]
+fn write_file_clipboard(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::POINT,
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+            Ole::CF_HDROP,
+        },
+        UI::Shell::DROPFILES,
+    };
+    let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    wide.extend([0, 0]);
+    let header_size = std::mem::size_of::<DROPFILES>();
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err("클립보드가 사용 중입니다.".into());
+        }
+        if EmptyClipboard() == 0 {
+            CloseClipboard();
+            return Err("클립보드를 비울 수 없습니다.".into());
+        }
+        let handle = GlobalAlloc(GMEM_MOVEABLE, header_size + wide.len() * 2);
+        if handle.is_null() {
+            CloseClipboard();
+            return Err("클립보드 메모리를 만들 수 없습니다.".into());
+        }
+        let pointer = GlobalLock(handle);
+        if pointer.is_null() {
+            CloseClipboard();
+            return Err("클립보드를 잠글 수 없습니다.".into());
+        }
+        std::ptr::write_unaligned(
+            pointer as *mut DROPFILES,
+            DROPFILES {
+                pFiles: header_size as u32,
+                pt: POINT { x: 0, y: 0 },
+                fNC: 0,
+                fWide: 1,
+            },
+        );
+        std::ptr::copy_nonoverlapping(
+            wide.as_ptr(),
+            (pointer as *mut u8).add(header_size) as *mut u16,
+            wide.len(),
+        );
+        GlobalUnlock(handle);
+        if SetClipboardData(CF_HDROP as u32, handle).is_null() {
+            CloseClipboard();
+            return Err("파일을 클립보드에 넣지 못했습니다.".into());
+        }
+        CloseClipboard();
+    }
+    Ok(())
+}
 #[cfg(target_os = "windows")]
 fn read_clipboard() -> Result<Option<String>, String> {
     use windows_sys::Win32::{
@@ -695,6 +1372,14 @@ fn paste_to_foreground() {
     }
 }
 
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn read_file_clipboard() -> Result<Option<PathBuf>, String> {
+    Ok(None)
+}
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn write_file_clipboard(_path: &Path) -> Result<(), String> {
+    Err("이 운영체제는 아직 지원하지 않습니다.".into())
+}
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn read_clipboard() -> Result<Option<String>, String> {
     Ok(None)

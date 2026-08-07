@@ -8,6 +8,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
+    "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
     "desktop:package-macos-dmg": "bash scripts/package-macos-dmg.sh"
   },
