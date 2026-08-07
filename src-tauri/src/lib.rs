@@ -296,6 +296,16 @@ pub(crate) fn http_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|_| "네트워크를 준비할 수 없습니다.".to_string())
 }
 
+pub(crate) fn file_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .redirect(Policy::none())
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(90))
+        .user_agent("mymemo-clipboard/0.1")
+        .build()
+        .map_err(|_| "파일 전송을 준비할 수 없습니다.".to_string())
+}
+
 #[tauri::command]
 fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
     let settings = read_settings(&app)?;
@@ -486,6 +496,7 @@ pub fn run() {
             save_preferences,
             sync_now,
             clipboard::clipboard_history,
+            clipboard::clipboard_thumbnail,
             clipboard::clipboard_select,
             clipboard::clipboard_dismiss,
         ])

@@ -6,7 +6,7 @@ interface PublicSettings {
   server_url: string; username: string; display_name: string; logged_in: boolean;
   enabled: boolean; shortcut: string; device_name: string;
 }
-interface ClipboardItem { id: string; kind: 'text'|'url'; text: string; created_at: string }
+interface ClipboardItem { id: string; kind: 'text'|'url'|'file'|'image'; text: string; created_at: string; size_bytes?: number }
 
 const input = <T extends HTMLInputElement>(id: string) => document.getElementById(id) as T;
 const element = (id: string) => document.getElementById(id) as HTMLElement;
@@ -42,7 +42,8 @@ async function refreshHistory() {
     const text = document.createElement('span');
     text.className = 'item-text'; text.textContent = item.text;
     const meta = document.createElement('small');
-    meta.textContent = `${item.kind === 'url' ? '링크' : '텍스트'} · ${relativeTime(item.created_at)}`;
+    const label = ({ url: '링크', text: '텍스트', file: '파일', image: '이미지' } as const)[item.kind];
+    meta.textContent = `${label} · ${relativeTime(item.created_at)}`;
     row.append(text, meta); list.append(row);
   }
   if (!items.length) list.innerHTML = '<li class="empty">아직 동기화된 기록이 없습니다.</li>';
