@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ko">
+  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MyMemo Clipboard</title></head>
+  <body>
+    <main class="app-shell">
+      <header><div><p class="eyebrow">MyMemo Clipboard</p><h1>내 기기 사이에서 바로 붙여넣기</h1><p class="intro">같은 계정으로 로그인한 기기의 텍스트와 링크를 최대 3초 안에 동기화합니다.</p></div><div id="connection" class="connection" role="status">확인 중</div></header>
+      <section id="loginPanel" class="panel">
+        <div class="section-heading"><div><h2>로그인</h2><p>Jamserver Admin에서 발급받은 아이디와 비밀번호를 입력해 주세요.</p></div></div>
+        <form id="loginForm" class="form-grid">
+          <label class="wide">서버 주소<input id="serverUrl" type="url" value="https://admin.memos.my" autocomplete="url" required></label>
+          <label>아이디<input id="username" autocomplete="username" required></label>
+          <label>비밀번호<input id="password" type="password" autocomplete="current-password" required></label>
+          <div class="form-actions wide"><button id="loginButton" class="primary" type="submit">로그인</button></div>
+        </form>
+      </section>
+      <section id="accountPanel" class="panel" hidden>
+        <div class="account-row"><div><p class="section-label">로그인 계정</p><strong id="accountName"></strong><span id="accountUsername"></span></div><button id="logoutButton" class="quiet danger">로그아웃</button></div>
+      </section>
+      <section id="settingsPanel" class="panel" hidden>
+        <div class="section-heading"><div><h2>동기화 설정</h2><p>복사한 텍스트와 HTTP(S) 링크만 동기화합니다.</p></div></div>
+        <form id="settingsForm" class="form-grid">
+          <label class="toggle wide"><input id="enabled" type="checkbox" checked><span><strong>클립보드 동기화</strong><small>끄면 이 기기의 로컬 기록과 암호화 키를 삭제합니다.</small></span></label>
+          <label class="wide">기록 열기 단축키<div class="shortcut-row"><input id="shortcut" value="Ctrl+Shift+V" required><button id="resetShortcut" type="button" class="quiet">기본값</button></div></label>
+          <div class="form-actions wide"><button class="primary" type="submit">설정 저장</button><button id="syncNow" type="button" class="quiet">지금 동기화</button></div>
+        </form>
+      </section>
+      <section id="recentPanel" class="panel" hidden>
+        <div class="section-heading"><div><h2>최근 기록</h2><p><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd>를 누르면 어느 앱에서든 기록을 열 수 있습니다.</p></div><span id="historyCount"></span></div>
+        <ol id="recentItems" class="recent-list"></ol>
+      </section>
+      <p id="message" class="message" role="status"></p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
+
