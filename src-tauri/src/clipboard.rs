@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, OnceLock,
+        Condvar, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -80,6 +80,8 @@ struct LocalSource {
     size_bytes: u64,
     sha256: String,
     #[serde(default)]
+    source_identity: Option<String>,
+    #[serde(default)]
     managed: bool,
 }
 
@@ -123,6 +125,13 @@ struct FileRequestCreated {
 #[derive(Debug, Deserialize)]
 struct FileRequestStatus {
     status: String,
+    #[serde(default)]
+    content_sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileUploadResult {
+    content_sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +147,17 @@ static FOREGROUND: OnceLock<Mutex<ForegroundTarget>> = OnceLock::new();
 static LAST_APPLIED_HASH: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
 static SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static POPUP_ARMED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static WINDOWS_STATE_CACHE: OnceLock<Mutex<Option<LocalState>>> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static MONITOR_WAKE: OnceLock<(Mutex<MonitorWake>, Condvar)> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct MonitorWake {
+    capture: bool,
+    sync: bool,
+}
 
 fn foreground() -> &'static Mutex<ForegroundTarget> {
     FOREGROUND.get_or_init(|| Mutex::new(ForegroundTarget::None))
@@ -147,9 +167,14 @@ fn last_applied_hash() -> &'static Mutex<Option<(String, Instant)>> {
 }
 
 #[cfg(target_os = "windows")]
-fn clipboard_change_marker() -> Option<u64> {
-    let marker = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
-    (marker != 0).then_some(marker as u64)
+fn request_monitor(capture: bool, sync: bool) {
+    let (state, wake) =
+        MONITOR_WAKE.get_or_init(|| (Mutex::new(MonitorWake::default()), Condvar::new()));
+    if let Ok(mut state) = state.lock() {
+        state.capture |= capture;
+        state.sync |= sync;
+        wake.notify_one();
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -232,7 +257,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn load_state(app: &tauri::AppHandle) -> Result<LocalState, String> {
+fn load_state_from_disk(app: &tauri::AppHandle) -> Result<LocalState, String> {
     let path = state_path(app)?;
     if !path.exists() {
         return Ok(LocalState::default());
@@ -250,6 +275,25 @@ fn load_state(app: &tauri::AppHandle) -> Result<LocalState, String> {
         .map_err(|_| "로컬 클립보드 기록이 올바르지 않습니다.".to_string())
 }
 
+#[cfg(target_os = "windows")]
+fn load_state(app: &tauri::AppHandle) -> Result<LocalState, String> {
+    let cache = WINDOWS_STATE_CACHE.get_or_init(|| Mutex::new(None));
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "로컬 클립보드 기록 상태를 읽을 수 없습니다.".to_string())?;
+    if let Some(state) = cache.as_ref() {
+        return Ok(state.clone());
+    }
+    let state = load_state_from_disk(app)?;
+    *cache = Some(state.clone());
+    Ok(state)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn load_state(app: &tauri::AppHandle) -> Result<LocalState, String> {
+    load_state_from_disk(app)
+}
+
 fn save_state(app: &tauri::AppHandle, state: &LocalState) -> Result<(), String> {
     let plain = serde_json::to_vec(state).map_err(|error| error.to_string())?;
     let mut nonce = [0_u8; 12];
@@ -261,11 +305,22 @@ fn save_state(app: &tauri::AppHandle, state: &LocalState) -> Result<(), String> 
         .map_err(|_| "클립보드 기록을 암호화할 수 없습니다.".to_string())?;
     let mut bytes = nonce.to_vec();
     bytes.extend(encrypted);
-    super::atomic_write(&state_path(app)?, &bytes)
+    super::atomic_write(&state_path(app)?, &bytes)?;
+    #[cfg(target_os = "windows")]
+    if let Ok(mut cache) = WINDOWS_STATE_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = Some(state.clone());
+    }
+    Ok(())
 }
 
 pub fn purge_local(app: &tauri::AppHandle) -> Result<(), String> {
     hide_popup(app);
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(mut cache) = WINDOWS_STATE_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+            *cache = None;
+        }
+    }
     match fs::remove_dir_all(root(app)?) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -338,6 +393,29 @@ fn source_bytes(source: &LocalSource, expected_size: u64) -> Result<Vec<u8>, Str
     {
         return Err("원본 파일이 복사한 뒤 변경되었거나 크기 제한을 넘었습니다.".into());
     }
+    #[cfg(target_os = "windows")]
+    if source.sha256.starts_with("pinned:") {
+        let expected_identity = source
+            .source_identity
+            .as_ref()
+            .ok_or_else(|| "지연 전송 파일 정보가 없습니다.".to_string())?;
+        let before = windows_source_identity(&source.path, &metadata);
+        if &before != expected_identity
+            || source.sha256 != format!("pinned:{}", hex(&Sha256::digest(before.as_bytes())))
+        {
+            return Err("원본 파일이 복사한 뒤 변경되었습니다.".into());
+        }
+        let bytes =
+            fs::read(&source.path).map_err(|_| "원본 파일을 읽을 수 없습니다.".to_string())?;
+        let after_metadata = fs::metadata(&source.path)
+            .map_err(|_| "원본 파일을 읽는 동안 변경되었습니다.".to_string())?;
+        if windows_source_identity(&source.path, &after_metadata) != before
+            || bytes.len() as u64 != expected_size
+        {
+            return Err("원본 파일을 읽는 동안 변경되었습니다.".into());
+        }
+        return Ok(bytes);
+    }
     let bytes = fs::read(&source.path).map_err(|_| "원본 파일을 읽을 수 없습니다.".to_string())?;
     if hex(&Sha256::digest(&bytes)) != source.sha256 {
         return Err("원본 파일이 복사한 뒤 변경되었습니다.".into());
@@ -382,6 +460,7 @@ fn fulfill_file_requests(
         let Ok(bytes) = source_bytes(source, request.size_bytes) else {
             continue;
         };
+        let content_sha256 = hex(&Sha256::digest(&bytes));
         let response = super::file_http_client()?
             .put(super::endpoint(
                 &settings.server_url,
@@ -392,11 +471,20 @@ fn fulfill_file_requests(
             .body(bytes)
             .send()
             .map_err(|error| error.without_url().to_string())?;
-        if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            continue;
+        }
+        if !response.status().is_success() {
             return Err(format!(
                 "파일을 전송하지 못했습니다. ({})",
                 response.status()
             ));
+        }
+        let uploaded: FileUploadResult = response
+            .json()
+            .map_err(|_| "파일 전송 응답이 올바르지 않습니다.".to_string())?;
+        if uploaded.content_sha256 != content_sha256 {
+            return Err("서버가 확인한 파일 내용이 원본과 다릅니다.".into());
         }
     }
     Ok(())
@@ -424,20 +512,6 @@ fn sync_once(
     settings: &Settings,
     token: &str,
 ) -> Result<(), String> {
-    let spaces = client
-        .get(super::endpoint(&settings.server_url, "/spaces")?)
-        .bearer_auth(token)
-        .send()
-        .map_err(|error| error.without_url().to_string())?;
-    if spaces.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(super::AUTH_REQUIRED.into());
-    }
-    if !spaces.status().is_success() {
-        return Err(format!(
-            "동기화 서버가 응답하지 않았습니다. ({})",
-            spaces.status()
-        ));
-    }
     let mut state = load_state(app).unwrap_or_default();
     let previous_state = state.clone();
     let mut pending = Vec::new();
@@ -571,10 +645,54 @@ fn image_from_clipboard() -> Option<DynamicImage> {
     .map(DynamicImage::ImageRgba8)
 }
 
-fn file_details(path: &Path) -> Result<(String, String, u64, String, Option<String>), String> {
-    let metadata = fs::metadata(path).map_err(|_| "복사한 파일을 읽을 수 없습니다.".to_string())?;
+#[cfg(target_os = "windows")]
+fn windows_source_identity(path: &Path, metadata: &fs::Metadata) -> String {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    let stable_path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    format!("{}:{}:{}", stable_path.display(), metadata.len(), modified)
+}
+
+#[cfg(target_os = "windows")]
+fn file_details(
+    path: &Path,
+) -> Result<(String, String, u64, String, Option<String>, Option<String>), String> {
+    let canonical =
+        fs::canonicalize(path).map_err(|_| "복사한 파일을 찾을 수 없습니다.".to_string())?;
+    let metadata =
+        fs::metadata(&canonical).map_err(|_| "복사한 파일 정보를 읽을 수 없습니다.".to_string())?;
     if !metadata.is_file() {
-        return Err("폴더 붙여넣기는 아직 지원하지 않습니다.".into());
+        return Err("폴더 붙여넣기는 지원하지 않습니다.".into());
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES as u64 {
+        return Err("파일은 10MB 이하만 공유할 수 있습니다.".into());
+    }
+    let filename = canonical
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "파일 이름을 읽을 수 없습니다.".to_string())?
+        .to_string();
+    let identity = windows_source_identity(&canonical, &metadata);
+    let digest = format!("pinned:{}", hex(&Sha256::digest(identity.as_bytes())));
+    let mime = mime_guess::from_path(&canonical)
+        .first_or_octet_stream()
+        .essence_str()
+        .to_string();
+    Ok((filename, mime, metadata.len(), digest, None, Some(identity)))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn file_details(
+    path: &Path,
+) -> Result<(String, String, u64, String, Option<String>, Option<String>), String> {
+    let metadata = fs::metadata(path).map_err(|_| "복사한 파일을 찾을 수 없습니다.".to_string())?;
+    if !metadata.is_file() {
+        return Err("폴더 붙여넣기는 지원하지 않습니다.".into());
     }
     if metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES as u64 {
         return Err("파일은 10MB 이하만 공유할 수 있습니다.".into());
@@ -598,7 +716,7 @@ fn file_details(path: &Path) -> Result<(String, String, u64, String, Option<Stri
     } else {
         None
     };
-    Ok((filename, mime, metadata.len(), hash, thumbnail))
+    Ok((filename, mime, metadata.len(), hash, thumbnail, None))
 }
 
 fn should_capture(hash: &str, last_hash: &mut String) -> bool {
@@ -669,7 +787,7 @@ fn capture_local(
     last_hash: &mut String,
 ) -> Result<(), String> {
     if let Some(path) = read_file_clipboard()? {
-        let (filename, mime, size, digest, thumbnail) = file_details(&path)?;
+        let (filename, mime, size, digest, thumbnail, source_identity) = file_details(&path)?;
         let hash = format!("file:{digest}");
         if !should_capture(&hash, last_hash) {
             return Ok(());
@@ -698,6 +816,7 @@ fn capture_local(
                 path,
                 size_bytes: size,
                 sha256: digest,
+                source_identity,
                 managed: false,
             }),
         );
@@ -778,6 +897,7 @@ fn capture_local(
             path: path.clone(),
             size_bytes: bytes.len() as u64,
             sha256: hex(&Sha256::digest(&bytes)),
+            source_identity: None,
             managed: true,
         }),
     );
@@ -787,6 +907,130 @@ fn capture_local(
     result
 }
 
+#[cfg(target_os = "windows")]
+fn start_windows_clipboard_listener() {
+    thread::spawn(|| unsafe {
+        use windows_sys::Win32::{
+            System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener},
+            UI::WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, GetMessageW, HWND_MESSAGE, MSG, WM_CLIPBOARDUPDATE,
+                WS_DISABLED,
+            },
+        };
+        let class = "STATIC\0".encode_utf16().collect::<Vec<_>>();
+        let title = "MyMemo Clipboard Listener\0"
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        let window = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            title.as_ptr(),
+            WS_DISABLED,
+            0,
+            0,
+            0,
+            0,
+            HWND_MESSAGE,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        );
+        if window.is_null() || AddClipboardFormatListener(window) == 0 {
+            if !window.is_null() {
+                DestroyWindow(window);
+            }
+            return;
+        }
+        let mut message: MSG = std::mem::zeroed();
+        while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+            if message.message == WM_CLIPBOARDUPDATE {
+                request_monitor(true, false);
+            }
+        }
+        RemoveClipboardFormatListener(window);
+        DestroyWindow(window);
+    });
+}
+
+#[cfg(target_os = "windows")]
+pub fn start_monitor(app: tauri::AppHandle) {
+    start_windows_clipboard_listener();
+    thread::spawn(move || {
+        let Ok(client) = super::http_client() else {
+            return;
+        };
+        let mut last_hash = String::new();
+        let mut file_source_active = false;
+        loop {
+            let (state, wake) =
+                MONITOR_WAKE.get_or_init(|| (Mutex::new(MonitorWake::default()), Condvar::new()));
+            let Ok(mut state) = state.lock() else {
+                return;
+            };
+            let mut timed_out = false;
+            while !state.capture && !state.sync {
+                if file_source_active {
+                    let Ok((next, timeout)) = wake.wait_timeout(state, Duration::from_secs(20))
+                    else {
+                        return;
+                    };
+                    state = next;
+                    if timeout.timed_out() {
+                        timed_out = true;
+                        break;
+                    }
+                } else {
+                    let Ok(next) = wake.wait(state) else {
+                        return;
+                    };
+                    state = next;
+                }
+            }
+            let capture = state.capture;
+            let sync = state.sync;
+            state.capture = false;
+            state.sync = false;
+            drop(state);
+            let settings = match super::read_settings(&app) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let token = super::session_token().unwrap_or_default();
+            if !settings.enabled || token.is_empty() {
+                file_source_active = false;
+                continue;
+            }
+            if capture {
+                let result = capture_local(&app, &client, &settings, &token, &mut last_hash);
+                if let Err(error) = result {
+                    let _ = app.emit("sync-status", error);
+                } else {
+                    file_source_active = load_state(&app)
+                        .unwrap_or_default()
+                        .sources
+                        .iter()
+                        .any(|source| source.sha256.starts_with("pinned:"));
+                }
+            }
+            if sync {
+                let result = SYNC_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .try_lock()
+                    .ok()
+                    .map(|_guard| sync_once(&app, &client, &settings, &token));
+                if matches!(&result, Some(Err(error)) if error == super::AUTH_REQUIRED) {
+                    super::clear_local_auth(&app);
+                    file_source_active = false;
+                }
+            } else if timed_out && file_source_active {
+                let state = load_state(&app).unwrap_or_default();
+                let _ = fulfill_file_requests(&client, &settings, &token, &state);
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
 pub fn start_monitor(app: tauri::AppHandle) {
     thread::spawn(move || {
         let Ok(client) = super::http_client() else {
@@ -860,6 +1104,8 @@ pub fn popup_focus_changed(app: &tauri::AppHandle, focused: bool) {
     }
 }
 pub fn show_popup(app: &tauri::AppHandle) {
+    #[cfg(target_os = "windows")]
+    request_monitor(false, true);
     if super::read_settings(app)
         .map(|settings| !settings.enabled)
         .unwrap_or(true)
@@ -967,8 +1213,13 @@ fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>,
         .map_err(|_| "파일 요청 응답이 올바르지 않습니다.".to_string())?;
     let started = Instant::now();
     let mut status = created.status;
-    while status == "pending" && started.elapsed() < Duration::from_secs(FILE_WAIT_SECONDS) {
-        thread::sleep(Duration::from_secs(1));
+    let expected_sha256 = loop {
+        if status == "pending" {
+            if started.elapsed() >= Duration::from_secs(FILE_WAIT_SECONDS) {
+                break None;
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
         let response = client
             .get(super::endpoint(
                 &settings.server_url,
@@ -983,16 +1234,25 @@ fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>,
         if !response.status().is_success() {
             return Err("파일 전송 상태를 확인하지 못했습니다.".into());
         }
-        status = response
+        let file_status = response
             .json::<FileRequestStatus>()
-            .map_err(|_| "파일 전송 상태가 올바르지 않습니다.".to_string())?
-            .status;
-    }
+            .map_err(|_| "파일 전송 상태가 올바르지 않습니다.".to_string())?;
+        status = file_status.status;
+        if matches!(status.as_str(), "ready" | "consumed") {
+            break file_status.content_sha256;
+        }
+        if status != "pending" {
+            break None;
+        }
+    };
     if !matches!(status.as_str(), "ready" | "consumed") {
         return Err(
             "원본 기기가 응답하지 않습니다. 원본 기기에서 앱이 실행 중인지 확인해 주세요.".into(),
         );
     }
+    let expected_sha256 = expected_sha256
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| "파일 전송 상태가 올바르지 않습니다.".to_string())?;
     let response = client
         .get(super::endpoint(
             &settings.server_url,
@@ -1003,6 +1263,14 @@ fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>,
         .map_err(|error| error.without_url().to_string())?;
     if !response.status().is_success() {
         return Err("파일을 내려받지 못했습니다.".into());
+    }
+    let response_sha256 = response
+        .headers()
+        .get("x-content-sha256")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "파일 전송 상태가 올바르지 않습니다.".to_string())?;
+    if response_sha256 != expected_sha256 {
+        return Err("받은 파일 내용이 올바르지 않습니다.".into());
     }
     let bytes = response
         .bytes()
@@ -1015,6 +1283,9 @@ fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>,
             .is_some_and(|size| size != bytes.len() as u64)
     {
         return Err("받은 파일 크기가 올바르지 않습니다.".into());
+    }
+    if hex(&Sha256::digest(&bytes)) != expected_sha256 {
+        return Err("받은 파일 내용이 올바르지 않습니다.".into());
     }
     Ok(bytes)
 }
