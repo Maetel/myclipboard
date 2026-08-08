@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../src-tauri/src/clipboard.rs', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+const windowsConfig = JSON.parse(
+  readFileSync(new URL('../src-tauri/tauri.windows.conf.json', import.meta.url), 'utf8'),
+);
 const windowsMonitorStart = source.indexOf(
   '#[cfg(target_os = "windows")]\npub fn start_monitor(app: tauri::AppHandle)',
 );
@@ -36,5 +40,15 @@ assert.doesNotMatch(source, /"\/spaces"/);
 assert.match(source, /headers\(\)[\s\S]*"x-content-sha256"/);
 assert.match(source, /hex\(&Sha256::digest\(&bytes\)\) != expected_sha256/);
 assert.match(source, /content_sha256 != content_sha256/);
+
+assert.deepEqual(windowsConfig.app.windows, []);
+assert.deepEqual(windowsConfig.bundle.targets, ['nsis']);
+assert.match(appSource, /WebviewWindowBuilder::new\([\s\S]*"main"/);
+assert.match(source, /WebviewWindowBuilder::new\([\s\S]*"clipboard-popup"/);
+assert.match(appSource, /MAIN_WINDOW_CREATING\.swap/);
+assert.match(appSource, /ExitRequested[\s\S]*code: None[\s\S]*prevent_exit/);
+assert.match(source, /POPUP_CREATING\.swap/);
+assert.match(appSource, /#\[cfg\(target_os = "windows"\)\][\s\S]*window\.destroy\(\)/);
+assert.match(source, /#\[cfg\(target_os = "windows"\)\][\s\S]*window\.destroy\(\)/);
 
 console.log('windows idle clipboard regression: ok');

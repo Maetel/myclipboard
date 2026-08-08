@@ -23,6 +23,8 @@ use std::{
     process::{Command, Stdio},
 };
 use tauri::{Emitter, Manager};
+#[cfg(target_os = "windows")]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use super::Settings;
@@ -34,6 +36,9 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: usize = 50_000_000;
 const FILE_WAIT_SECONDS: u64 = 45;
+
+#[cfg(target_os = "windows")]
+static POPUP_CREATING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClipboardItem {
@@ -1094,6 +1099,9 @@ pub fn start_monitor(app: tauri::AppHandle) {
 fn hide_popup(app: &tauri::AppHandle) {
     POPUP_ARMED.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("clipboard-popup") {
+        #[cfg(target_os = "windows")]
+        let _ = window.destroy();
+        #[cfg(not(target_os = "windows"))]
         let _ = window.hide();
     }
 }
@@ -1123,6 +1131,38 @@ pub fn show_popup(app: &tauri::AppHandle) {
             POPUP_ARMED.store(true, Ordering::SeqCst);
         }
         let _ = window.emit("clipboard-open", ());
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if POPUP_CREATING.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let app = app.clone();
+        thread::spawn(move || {
+            let result = WebviewWindowBuilder::new(
+                &app,
+                "clipboard-popup",
+                WebviewUrl::App("popup.html".into()),
+            )
+            .title("클립보드 기록")
+            .inner_size(440.0, 420.0)
+            .center()
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .focused(true)
+            .build();
+            POPUP_CREATING.store(false, Ordering::SeqCst);
+            if let Ok(window) = result {
+                POPUP_ARMED.store(false, Ordering::SeqCst);
+                if window.set_focus().is_ok() {
+                    POPUP_ARMED.store(true, Ordering::SeqCst);
+                }
+                let _ = window.emit("clipboard-open", ());
+            }
+        });
     }
 }
 

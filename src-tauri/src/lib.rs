@@ -15,6 +15,8 @@ use tauri::{
     tray::TrayIconBuilder,
     Emitter, Manager,
 };
+#[cfg(target_os = "windows")]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 const DEFAULT_SERVER: &str = "https://admin.memos.my";
@@ -23,6 +25,10 @@ const KEYRING_SERVICE: &str = "my.memos.clipboard";
 const SESSION_KEY: &str = "session-token";
 const HISTORY_KEY: &str = "history-key";
 pub(crate) const AUTH_REQUIRED: &str = "auth_required";
+
+#[cfg(target_os = "windows")]
+static MAIN_WINDOW_CREATING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -494,6 +500,40 @@ fn sync_now(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<
     clipboard::sync_now(&app)
 }
 
+#[cfg(target_os = "windows")]
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+    if MAIN_WINDOW_CREATING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let result = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
+            .title("MyMemo Clipboard")
+            .inner_size(820.0, 760.0)
+            .min_inner_size(620.0, 600.0)
+            .resizable(true)
+            .build();
+        MAIN_WINDOW_CREATING.store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(window) = result {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -528,8 +568,16 @@ pub fn run() {
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+                #[cfg(target_os = "windows")]
+                {
+                    api.prevent_close();
+                    let _ = window.destroy();
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
             }
         })
         .setup(|app| {
@@ -544,12 +592,7 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("MyMemo Clipboard")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
+                    "open" => show_main_window(app),
                     "history" => clipboard::show_popup(app),
                     "quit" => app.exit(0),
                     _ => {}
@@ -561,6 +604,15 @@ pub fn run() {
             clipboard::start_monitor(app.handle().clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run MyMemo Clipboard");
+        .build(tauri::generate_context!())
+        .expect("failed to build MyMemo Clipboard")
+        .run(|_, event| {
+            #[cfg(target_os = "windows")]
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                api.prevent_exit();
+            }
+        });
 }
