@@ -294,21 +294,27 @@ pub(crate) fn endpoint(server_url: &str, path: &str) -> Result<reqwest::Url, Str
 }
 
 pub(crate) fn http_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
+    let builder = reqwest::blocking::Client::builder()
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
-        .user_agent("mymemo-clipboard/0.1")
+        .user_agent("mymemo-clipboard/0.1");
+    #[cfg(target_os = "windows")]
+    let builder = builder.pool_max_idle_per_host(0);
+    builder
         .build()
         .map_err(|_| "네트워크를 준비할 수 없습니다.".to_string())
 }
 
 pub(crate) fn file_http_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
+    let builder = reqwest::blocking::Client::builder()
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(90))
-        .user_agent("mymemo-clipboard/0.1")
+        .user_agent("mymemo-clipboard/0.1");
+    #[cfg(target_os = "windows")]
+    let builder = builder.pool_max_idle_per_host(0);
+    builder
         .build()
         .map_err(|_| "파일 전송을 준비할 수 없습니다.".to_string())
 }

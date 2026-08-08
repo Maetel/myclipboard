@@ -47,6 +47,7 @@ assert.match(appSource, /WebviewWindowBuilder::new\([\s\S]*"main"/);
 assert.match(source, /WebviewWindowBuilder::new\([\s\S]*"clipboard-popup"/);
 assert.match(appSource, /MAIN_WINDOW_CREATING\.swap/);
 assert.match(appSource, /ExitRequested[\s\S]*code: None[\s\S]*prevent_exit/);
+assert.equal(appSource.match(/pool_max_idle_per_host\(0\)/g)?.length, 2);
 assert.match(source, /POPUP_CREATING\.swap/);
 assert.match(appSource, /#\[cfg\(target_os = "windows"\)\][\s\S]*window\.destroy\(\)/);
 assert.match(source, /#\[cfg\(target_os = "windows"\)\][\s\S]*window\.destroy\(\)/);
