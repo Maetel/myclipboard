@@ -116,6 +116,7 @@ struct PendingFileRequests {
 
 #[derive(Debug, Deserialize)]
 struct PendingFileRequest {
+    #[serde(alias = "id")]
     request_id: String,
     item_id: String,
     size_bytes: u64,
@@ -599,12 +600,15 @@ fn sync_once(
     }
     state.items.truncate(MAX_ITEMS);
     clean_local_sources(&mut state);
-    let _ = fulfill_file_requests(client, settings, token, &state);
+    let file_request_error = fulfill_file_requests(client, settings, token, &state).err();
     if state != previous_state {
         save_state(app, &state)?;
         let _ = app.emit("clipboard-updated", ());
     }
     if let Some(error) = pending_error {
+        return Err(error);
+    }
+    if let Some(error) = file_request_error {
         return Err(error);
     }
     Ok(())
@@ -1051,7 +1055,9 @@ pub fn start_monitor(app: tauri::AppHandle) {
                 }
             } else if timed_out && file_source_active {
                 let state = load_state(&app).unwrap_or_default();
-                let _ = fulfill_file_requests(&client, &settings, &token, &state);
+                if let Err(error) = fulfill_file_requests(&client, &settings, &token, &state) {
+                    let _ = app.emit("sync-status", error);
+                }
             }
         }
     });
@@ -1767,5 +1773,14 @@ mod tests {
         assert!(validate_shortcut("Command+Shift+C").is_ok());
         assert!(validate_shortcut("V").is_err());
         assert!(validate_shortcut("Ctrl+Shift").is_err());
+    }
+
+    #[test]
+    fn pending_file_request_accepts_server_id_field() {
+        let pending: PendingFileRequests = serde_json::from_str(
+            r#"{"requests":[{"id":"request-1","item_id":"item-1","size_bytes":63}]}"#,
+        )
+        .expect("server pending response should deserialize");
+        assert_eq!(pending.requests[0].request_id, "request-1");
     }
 }
