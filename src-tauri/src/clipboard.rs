@@ -376,11 +376,22 @@ fn publish(
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Err(super::AUTH_REQUIRED.into());
     }
-    if !response.status().is_success() {
-        return Err(format!(
-            "클립보드 전송에 실패했습니다. ({})",
-            response.status()
-        ));
+    let status = response.status();
+    if !status.is_success() {
+        let code = response
+            .json::<super::ApiError>()
+            .ok()
+            .map(|body| body.error);
+        return match code.as_deref() {
+            Some("quota_exceeded") => Err(
+                "저장 용량 50MB를 모두 사용했습니다. 마이메모 웹에서 파일이나 기록을 정리해 주세요."
+                    .into(),
+            ),
+            Some("clipboard_item_too_large") => {
+                Err("이 클립보드 항목은 공유하기에 너무 큽니다.".into())
+            }
+            _ => Err(format!("클립보드 전송에 실패했습니다. ({status})")),
+        };
     }
     response
         .json()
@@ -520,6 +531,7 @@ fn sync_once(
     let mut state = load_state(app).unwrap_or_default();
     let previous_state = state.clone();
     let mut pending = Vec::new();
+    let mut pending_error = None;
     for item in state.pending.clone() {
         match publish(client, settings, token, &item) {
             Ok(value) => {
@@ -533,7 +545,13 @@ fn sync_once(
                 }
                 state.items.insert(0, value)
             }
-            Err(_) => pending.push(item),
+            Err(error) => {
+                if error == super::AUTH_REQUIRED {
+                    return Err(error);
+                }
+                pending_error.get_or_insert(error);
+                pending.push(item);
+            }
         }
     }
     state.pending = pending;
@@ -585,6 +603,9 @@ fn sync_once(
     if state != previous_state {
         save_state(app, &state)?;
         let _ = app.emit("clipboard-updated", ());
+    }
+    if let Some(error) = pending_error {
+        return Err(error);
     }
     Ok(())
 }
@@ -754,7 +775,7 @@ fn store_capture(
             }
             state.items.insert(0, value)
         }
-        Err(_) => {
+        Err(error) => {
             state.items.insert(
                 0,
                 ClipboardItem {
@@ -774,7 +795,8 @@ fn store_capture(
             if let Some(source) = source {
                 state.sources.push(source);
             }
-            state.pending.push(pending)
+            state.pending.push(pending);
+            let _ = app.emit("sync-status", error);
         }
     }
     state.items.truncate(MAX_ITEMS);

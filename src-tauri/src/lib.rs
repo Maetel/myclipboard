@@ -19,7 +19,7 @@ use tauri::{
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-const DEFAULT_SERVER: &str = "https://admin.memos.my";
+const DEFAULT_SERVER: &str = "https://memos.my";
 const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+V";
 const KEYRING_SERVICE: &str = "my.memos.clipboard";
 const SESSION_KEY: &str = "session-token";
@@ -40,6 +40,7 @@ pub struct Settings {
     pub device_name: String,
     pub enabled: bool,
     pub shortcut: String,
+    pub account_migration_required: bool,
 }
 
 impl Default for Settings {
@@ -52,6 +53,7 @@ impl Default for Settings {
             device_name: default_device_name(),
             enabled: true,
             shortcut: DEFAULT_SHORTCUT.into(),
+            account_migration_required: false,
         }
     }
 }
@@ -65,6 +67,7 @@ struct PublicSettings {
     logged_in: bool,
     enabled: bool,
     shortcut: String,
+    account_migration_required: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -286,9 +289,9 @@ pub(crate) fn endpoint(server_url: &str, path: &str) -> Result<reqwest::Url, Str
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err("HTTPS Jamserver 주소를 입력해 주세요.".into());
+        return Err("마이메모 HTTPS 주소를 확인해 주세요.".into());
     }
-    url.set_path(&format!("/admin/clipboard-app/v1{path}"));
+    url.set_path(&format!("/api/clipboard/v1{path}"));
     url.set_query(None);
     Ok(url)
 }
@@ -334,6 +337,21 @@ pub(crate) fn clear_local_auth(app: &tauri::AppHandle) {
 #[tauri::command]
 fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
     let mut settings = read_settings(&app)?;
+    if reqwest::Url::parse(&settings.server_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .as_deref()
+        == Some("admin.memos.my")
+    {
+        let _ = delete_secret(SESSION_KEY);
+        let _ = clipboard::purge_local(&app);
+        let _ = app.global_shortcut().unregister_all();
+        settings.server_url = DEFAULT_SERVER.into();
+        settings.username.clear();
+        settings.display_name.clear();
+        settings.account_migration_required = true;
+        write_settings(&app, &settings)?;
+    }
     let mut token = session_token()?;
     if !token.is_empty() {
         let unauthorized = http_client()
@@ -356,6 +374,7 @@ fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
         logged_in: !token.is_empty(),
         enabled: settings.enabled,
         shortcut: settings.shortcut,
+        account_migration_required: settings.account_migration_required,
     })
 }
 
@@ -389,7 +408,9 @@ fn login(
     let result: LoginResponse = response
         .json()
         .map_err(|_| "로그인 응답이 올바르지 않습니다.".to_string())?;
-    if !result.token.starts_with("jmc_") || result.token.len() != 47 {
+    if !(result.token.starts_with("smc_") || result.token.starts_with("jmc_"))
+        || result.token.len() != 47
+    {
         return Err("로그인 응답이 올바르지 않습니다.".into());
     }
     if settings.username != result.user.username
@@ -402,6 +423,7 @@ fn login(
     settings.username = result.user.username;
     settings.display_name = result.user.display_name;
     settings.enabled = true;
+    settings.account_migration_required = false;
     write_settings(&app, &settings)?;
     clipboard::apply_shortcut(&app, &settings)?;
     let _ = app.emit("sync-status", "동기화 준비됨");
@@ -447,7 +469,9 @@ fn change_password(
     }
     let code = response.json::<ApiError>().ok().map(|body| body.error);
     match (status, code.as_deref()) {
-        (_, Some("current_password_invalid")) => Err("현재 비밀번호가 맞지 않습니다.".into()),
+        (_, Some("current_password_invalid" | "invalid_credentials")) => {
+            Err("현재 비밀번호가 맞지 않습니다.".into())
+        }
         (_, Some("password_unchanged")) => {
             Err("현재 비밀번호와 다른 비밀번호를 입력해 주세요.".into())
         }
@@ -621,4 +645,23 @@ pub fn run() {
                 api.prevent_exit();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smallmemo_endpoint_is_used_for_every_https_origin() {
+        assert_eq!(
+            endpoint("https://memos.my", "/feed").unwrap().as_str(),
+            "https://memos.my/api/clipboard/v1/feed"
+        );
+        assert_eq!(
+            endpoint("https://admin.memos.my", "/feed")
+                .unwrap()
+                .as_str(),
+            "https://admin.memos.my/api/clipboard/v1/feed"
+        );
+    }
 }

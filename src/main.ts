@@ -5,6 +5,7 @@ import './style.css';
 interface PublicSettings {
   server_url: string; username: string; display_name: string; logged_in: boolean;
   enabled: boolean; shortcut: string; device_name: string;
+  account_migration_required: boolean;
 }
 interface ClipboardItem { id: string; kind: 'text'|'url'|'file'|'image'; text: string; created_at: string; size_bytes?: number }
 
@@ -51,7 +52,7 @@ async function refreshHistory() {
 
 async function load() {
   settings = await invoke<PublicSettings>('load_settings');
-  input('serverUrl').value = settings.server_url || 'https://admin.memos.my';
+  input('serverUrl').value = settings.server_url || 'https://memos.my';
   input('enabled').checked = settings.enabled;
   input('shortcut').value = settings.shortcut;
   loginPanel.hidden = settings.logged_in;
@@ -64,6 +65,9 @@ async function load() {
   element('accountName').textContent = settings.display_name;
   element('accountUsername').textContent = settings.username ? `@${settings.username} · ${settings.device_name}` : '';
   if (settings.logged_in) await refreshHistory();
+  if (settings.account_migration_required) {
+    setMessage('기존 복사 기록은 마이메모로 옮겼습니다. 같은 마이메모 계정으로 다시 로그인해 주세요.');
+  }
 }
 
 element('loginForm').addEventListener('submit', async (event) => {
