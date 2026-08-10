@@ -1,10 +1,10 @@
 # 마이메모 클립보드 사용자 시나리오와 검증 기록
 
-이 문서는 `memos.my` 웹과 MyMemo Clipboard Windows 앱 사이에서 사용자가 실제로 겪는 흐름, 기대 결과, 검증 방법을 함께 기록합니다. 정상 흐름만 확인하지 않고 네트워크 끊김, 중복 조작, 취소, 세션 폐기, 원본 변경처럼 데이터나 사용자의 의도와 다른 결과를 만들 수 있는 경계도 완료 조건에 포함합니다.
+이 문서는 `memos.my` 웹과 MyMemo Clipboard Windows/macOS 앱 사이에서 사용자가 실제로 겪는 흐름, 기대 결과, 검증 방법을 함께 기록합니다. 정상 흐름만 확인하지 않고 네트워크 끊김, 중복 조작, 취소, 세션 폐기, 원본 변경처럼 데이터나 사용자의 의도와 다른 결과를 만들 수 있는 경계도 완료 조건에 포함합니다.
 
 ## 검증 결과를 읽는 기준
 
-- **실기기**: 설치된 Windows 앱과 운영 `memos.my`를 실제로 조작해 결과를 확인했습니다.
+- **실기기**: 설치된 Windows 또는 macOS 앱과 운영 `memos.my`를 실제로 조작해 결과를 확인했습니다.
 - **자동화**: TypeScript·Rust·정적 회귀 테스트로 같은 결함이 다시 들어오지 않는지 확인했습니다.
 - **코드 확인**: 구현과 서버 검증 규칙을 양쪽에서 대조했습니다. 이것만으로 실기기 완료를 주장하지 않습니다.
 - 운영 계정의 비밀번호, 세션 원문, 암호화 키와 클립보드 원문은 검증 기록에 남기지 않습니다.
@@ -46,7 +46,7 @@ Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나
 ### S4. 기록 창에서 검색·선택·취소
 
 1. 사용자가 붙여넣을 앱을 앞에 둔 채 저장된 단축키를 누르면 기록 창이 열리고 검색창에 초점이 갑니다.
-2. 방향키는 선택만 옮깁니다. Enter 또는 항목 클릭만 선택한 내용을 Clipboard에 적용하고, 기록 창을 열기 직전의 앱으로 붙여넣기를 한 번 시도합니다.
+2. 방향키와 한 번 클릭은 선택만 옮깁니다. Enter 또는 항목 더블클릭은 선택한 내용을 Clipboard에 적용하고, 기록 창을 열기 직전의 앱으로 붙여넣기를 한 번 시도합니다.
 3. Escape 또는 기록 창 밖 클릭은 선택 전에는 아무 내용도 적용하지 않고 닫습니다.
 4. 파일을 받는 중 Escape를 누르면 요청을 취소하고, 늦게 응답이 도착해도 Clipboard를 바꾸거나 뒤늦게 붙여넣지 않습니다.
 5. 더블클릭, Enter 연타, 클릭과 Enter가 겹쳐도 한 시점에는 선택 하나만 실행합니다.
@@ -64,9 +64,18 @@ Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나
 
 ### S6. 재시작과 유휴 상태
 
-- 앱 재시작과 Windows 재로그인 뒤에도 인스턴스는 하나만 실행되고 보이는 console 창이 없어야 합니다.
+- 앱을 다시 실행해도 인스턴스는 하나만 유지되고 기존 설정 창이 앞으로 옵니다. Windows 재로그인 뒤에도 보이는 console 창이 없어야 합니다.
 - 유휴 상태에서는 Clipboard를 열거나 서버를 polling하지 않습니다. 복사 알림, 기록 창 열기, 수동 동기화처럼 사용자가 만든 사건에서만 작업합니다.
 - 원격 요청을 받을 수 있는 로컬 파일 원본이 있을 때만 제한된 주기로 요청 상태를 확인합니다.
+
+### S7. 저장된 계정으로 시작하고 기록을 둘러보기
+
+1. 유효한 앱 로그인 정보가 보안 저장소에 있으면 시작 화면에서 계정을 확인한 뒤 로그인 화면을 거치지 않고 계정 화면으로 이동합니다.
+2. macOS Keychain 확인이 늦어져도 설정 창은 계속 그려지고, 4초가 지나면 운영체제의 보안 저장소 확인 창을 살펴보라는 안내가 나타납니다.
+3. 최근 기록과 기록 팝업에서 파일은 파일 아이콘과 `파일` 문구, 원래 파일명으로 구분합니다.
+4. 기록을 불러오는 동안에는 진행 상태를 보이고, 실패하면 기존 목록을 지운 빈 화면 대신 오류와 `다시 시도`를 제공합니다.
+5. 썸네일은 화면 가까이에 들어온 항목만 불러오며, 연속 갱신이나 늦은 응답이 검색어·현재 선택·스크롤 위치를 되돌리지 않습니다.
+6. 원격 파일을 실행하면 해당 행과 상태 영역에 경과 시간과 `Esc로 취소`를 표시합니다. 이 동안 화면 그리기와 Escape 입력은 계속 반응해야 합니다.
 
 ## 시나리오별 검증표
 
@@ -89,6 +98,12 @@ Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나
 | V15 | Windows 개인정보 보호 marker 없음·0·1·손상 조합 | marker 없음/명시적 1만 캡처, 제외/0/손상은 캡처하지 않음 | Windows Rust unit test |
 | V16 | 웹에서 허용되는 8~11자 기존 비밀번호로 앱 비밀번호 변경 | 현재 비밀번호 인증 가능, 새 비밀번호는 웹과 같은 8자 기준 | Windows Rust unit test |
 | V17 | keyring·로컬 파일·설정·단축키 정리 중 하나를 실패 처리 | 가능한 정리는 모두 시도하고 UI에 실패를 알리며 성공으로 표시하지 않음 | 코드 경로·native build 확인, fault injection 후속 |
+| V18 | 저장된 로그인 정보가 있는 상태에서 앱 시작 | 로그인 화면을 노출하지 않고 계정 화면으로 이동, Keychain 대기 중에도 주 화면 스레드 반응 | DOM 회귀 검사 + Mac 주 화면 스레드 표본 |
+| V19 | 기록 창 열기·최근 기록 읽기·썸네일 읽기가 느림 | 창과 검색 입력은 반응하고 불러오기·오류·재시도 상태를 표시 | 비동기 worker·팝업 회귀 검사 + Mac 주 화면 스레드 표본 |
+| V20 | 원격 파일 더블클릭 뒤 최대 45초 대기 | 행 진행 표시·경과 시간·취소 안내 표시, 중복 요청 차단, Escape 즉시 처리 | 선택 상태·팝업 회귀 검사; Mac 화면 반복 조작은 후속 |
+| V21 | 파일 기록과 받은 파일을 Finder/Explorer에서 확인 | 파일 아이콘·`파일` 문구·원래 파일명 표시, Clipboard에는 실제 파일 목록 형식 적용 | DOM 회귀 검사 + Windows/macOS native code 확인 |
+| V22 | 기록 열기·갱신 event 연속 발생, 응답 역순 도착, 긴 목록 스크롤 | 최신 결과만 반영, 동일 목록은 다시 그리지 않음, 화면 가까운 썸네일만 요청 | 팝업 갱신 순서·lazy-load 회귀 검사 |
+| V23 | macOS에서 앱을 연속 두 번 실행 | process 하나만 유지하고 기존 창을 앞으로 가져옴 | Mac Studio 실기기 process 1개 확인 |
 
 ## fresh-context 비판 검토에서 보강한 경계
 
@@ -114,11 +129,11 @@ Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나
 - Windows copy 알림은 boolean wake 하나라 느린 네트워크에서 빠르게 이어진 A/B/C 복사를 모두 보존한다는 보장이 없습니다. 게시보다 암호화 로컬 저장을 먼저 끝내고 별도 순서 queue가 보내도록 바꿔야 합니다.
 - 손상된 `history.enc`를 일부 경로가 빈 상태로 대체할 수 있고 offline pending 전체 byte 상한도 없습니다. 원본 보존, backpressure, 복구 UI가 필요합니다.
 - 파일 원본이 있는 동안의 20초 요청 확인과 앱 재시작 뒤 source 복원은 현재 유휴 문구와 맞지 않습니다. push/long-poll 또는 명시된 제한 polling lifecycle로 다시 설계해야 합니다.
-- single-instance와 Windows 로그인 후 자동 시작은 앱 자체에서 보장하지 않습니다. 중복 실행·재로그인 시나리오를 별도 릴리스 항목으로 구현해야 합니다.
+- Windows 로그인 후 자동 시작은 앱 자체에서 보장하지 않습니다. 운영체제 시작 항목 등록과 업데이트 뒤 재로그인 시나리오는 별도 릴리스 항목으로 구현해야 합니다.
 - managed image와 받은 파일이 로그아웃 전까지 평문으로 남고 downloads 정리 기간이 없습니다. 암호화 저장과 만료 정리가 필요합니다.
 - 웹에는 클립보드 항목 삭제 조작이 없어 quota 안내의 “기록 정리”를 바로 실행할 수 없습니다.
 - 서버 prune과 file request의 200개 초과·동시 요청·중복 소비에는 별도 통합 테스트와 원자적 claim이 필요합니다.
-- 팝업의 늦은 history 응답이 최신 결과를 덮지 않도록 request generation을 추가하고, 실제 NVDA/Narrator 검증과 origin 기기 이름 제공이 필요합니다.
+- 실제 NVDA/Narrator 검증과 origin 기기 이름 제공이 필요합니다.
 - Windows 파일은 복사 시 원문 hash를 읽지 않는 개인정보 보호 설계이므로 같은 path·크기·mtime을 유지한 교체까지는 감지하지 못합니다. file identity 고정 또는 선택 시 사용자 확인이 필요합니다.
 - `EmptyClipboard` 이후 write 실패와 `SendInput` 실패는 기존 Clipboard·대상 앱 결과를 완전히 복구하지 못합니다. fault injection과 관리자 권한 앱 경계 테스트가 필요합니다.
 
@@ -140,3 +155,15 @@ Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나
 - 설치된 physical/packaged Windows view는 모두 ProductVersion `0.2.2`, SHA-256 `38B2CBDD5ECC9A5807A44BD414AAECCF3804FD206EB0462EA4ED019FF33C5DC8`로 일치했습니다. 실행 process는 physical 설치 경로의 한 개였고 검사 시점의 TCP 연결은 0개였습니다.
 - SmallMemo는 변경 없이 전체 45개 test file의 294개 test, Svelte check, production build를 다시 통과했습니다. 독립 감사에서 찾은 server prune/file-request 동시성은 기존 test coverage가 없으므로 위의 남은 위험으로 유지합니다.
 - V9·V10의 native 상태 전이와 UI 중복 입력 방지는 자동 회귀로 확인했지만, 이 세션의 Windows Computer Use 연결은 WSL 작업 경로를 native file URI로 바꾸기 전에 실패했습니다. 따라서 설치본의 실제 더블클릭·대기 중 Escape 반복 조작은 아직 실기기 통과로 올리지 않았습니다.
+
+## 2026-08-10 0.2.3 사용성 개선 검증
+
+- 먼저 `docs/UX_AUDIT.md`에 시작, 기록 탐색, 느린 파일 전송, 오류 복구, 접근성, 중복 실행 문제와 완료 조건을 정리한 뒤 구현했습니다.
+- 저장된 로그인 정보 확인, 최근 기록, 팝업 기록·썸네일·항목 실행, 로그인·로그아웃·설정·수동 동기화를 비동기 명령과 blocking 전용 worker로 옮겼습니다. 시작 `setup`에서 Keychain과 단축키를 읽는 작업도 별도 thread로 옮겼습니다.
+- Mac Studio에서 수정 전 프로세스 호출 스택은 `SecKeychainFindGenericPassword`가 AppKit 주 화면 스레드를 막는 상태를 보였고, 수정 후 같은 대기 중 주 화면 스레드가 정상 AppKit event loop에 머무는 것을 확인했습니다. 잠긴 화면의 Keychain 승인 창 때문에 실제 검색 입력과 파일 더블클릭 반복 조작까지는 완료하지 못했습니다.
+- 파일·이미지 실행 전 두 번의 animation frame을 기다려 진행 상태를 먼저 그립니다. 실행 중에는 같은 요청을 다시 시작하지 않고, Escape가 선택 상태를 취소하며, 완료 전 각 네트워크·파일·Clipboard 경계에서 취소 여부를 다시 확인합니다.
+- 한 번 클릭은 선택만 하고 Enter·더블클릭만 실행하도록 맞췄습니다. 파일 아이콘, 경과 시간, 취소 안내, 기록 오류의 재시도, 화면 위치 기반 썸네일 불러오기, 직렬화된 갱신과 늦은 응답 무시를 추가했습니다.
+- macOS 파일 Clipboard는 문자열 경로가 아니라 운영체제 파일 목록 형식으로 읽고 씁니다. 내려받은 파일은 내부 ID 폴더 아래에 원래 파일명으로 저장해 Finder에 내부 ID가 붙은 이름을 노출하지 않습니다.
+- Tauri 단일 실행 인스턴스 플러그인을 가장 먼저 등록했습니다. Mac Studio에서 앱을 연속 두 번 실행한 뒤 process가 하나만 남는 것을 확인했습니다.
+- 기존 자동 검증에서는 TypeScript, Vite, UX 정적 회귀, Windows 정적 회귀, Windows Rust 7개, Mac Rust 5개가 통과했습니다. Windows 0.2.3 설치 파일과 Mac arm64 `.app`·DMG도 생성했고 DMG 구조 검증을 통과했습니다. 사용자의 이후 요청에 따라 이 문서 갱신 세션에서는 테스트를 다시 실행하지 않았습니다.
+- MacBook이 연결되지 않았고 Mac Studio 화면이 잠겨 있어 Mac A에서 Mac B로 실제 파일을 보내고 B에서 더블클릭·Escape를 반복하는 최종 실기기 흐름은 아직 통과로 올리지 않습니다. 이는 코드·native build 완료와 별개인 남은 실제 조작 검증입니다.
