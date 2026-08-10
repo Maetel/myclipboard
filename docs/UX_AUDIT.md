@@ -9,6 +9,7 @@
 - 동적으로 바뀌는 목록은 갱신 중임을 `aria-busy`로 전달하고, 완료된 상태를 `role=status`에서 한 번 알립니다. ([MDN `aria-busy`](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Attributes/aria-busy), [MDN live regions](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Guides/Live_regions))
 - 사용자가 이미 알려 준 상태를 다시 묻지 않습니다. 유효성 검사는 첫 화면을 막지 않고 백그라운드 동기화 결과로 반영합니다.
 - 목록의 한 번 클릭은 선택, Enter나 더블클릭은 실행으로 통일합니다. 느린 실행 중 같은 요청을 다시 만들지 않습니다.
+- 같은 앱을 다시 열어도 process와 동기화 worker는 하나만 유지하고 기존 window를 앞으로 가져옵니다. ([Tauri Single Instance](https://v2.tauri.app/plugin/single-instance/))
 
 현재 frontend는 이미 Vite 기반 CSR입니다. 멈춤의 원인은 rendering 방식이 아니라 동기식 Rust IPC와 한꺼번에 시작하는 후속 요청이므로 framework를 교체하지 않고 작업 경계를 비동기로 바꿉니다.
 
@@ -27,6 +28,7 @@
 | P2 | 초기 로딩 실패 시 빈 목록처럼 보이고 다시 시도할 방법이 없음 | `refresh()` rejection을 처리하지 않음 | 오류 문구와 `다시 시도` 버튼 제공, 마지막 정상 목록 유지 | 강제 오류 후 retry 검사 |
 | P2 | 설정·로그인·로그아웃·수동 동기화 중에도 창 전체가 멈출 수 있음 | blocking HTTP/keyring/disk command가 모두 동기 함수 | 사용자 조작 command 전체를 async worker로 이동하고 button busy 상태 통일 | 느린 응답 중 window interaction 확인 |
 | P2 | popup이 동기화 event를 연속으로 받으면 선택 중인 행까지 다시 그림 | 선택 중에도 `clipboard-updated`가 즉시 refresh | 실행 중 갱신을 보류하고 실패 후 한 번만 반영 | 선택 중 event burst 검사 |
+| P1 | 앱을 다시 열면 같은 계정으로 process가 여러 개 생김 | single-instance 보장이 없음 | 두 번째 실행은 종료하고 기존 main window를 앞으로 가져옴 | Mac·Windows에서 재실행 후 process 1개 확인 |
 
 ## 이번 개선 범위 밖에서 추적할 항목
 
@@ -43,3 +45,4 @@
 5. click은 선택만, Enter·더블클릭은 한 번만 실행합니다.
 6. 겹친 refresh, 연속 event, 늦은 thumbnail 응답이 최신 화면을 되돌리지 않습니다.
 7. 자동 회귀 검사와 Mac 실기기에서 위 흐름을 확인하고 결과를 `docs/USER_SCENARIOS.md`에 기록합니다.
+8. 앱을 두 번 열어도 process는 하나이고 기존 window가 다시 보입니다.

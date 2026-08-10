@@ -18,6 +18,8 @@ for (const command of ['clipboard_history', 'clipboard_thumbnail', 'clipboard_se
   assert.match(clipboard, new RegExp(`pub async fn ${command}\\(`), `${command} must be async`);
 }
 assert.match(app, /spawn_blocking\(task\)/);
+assert.match(app, /Builder::default\(\)[\s\S]*?plugin\(tauri_plugin_single_instance::init/);
+assert.match(app, /tauri_plugin_single_instance::init\(\|app, _, _\|[\s\S]*show_main_window\(app\)/);
 const settingsStart = app.indexOf('fn load_settings_blocking(');
 const settingsEnd = app.indexOf('\n#[tauri::command]\nasync fn load_settings', settingsStart);
 assert.ok(settingsStart >= 0 && settingsEnd > settingsStart);
