@@ -11,6 +11,8 @@
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
+    "desktop:build:windows": "bash scripts/build-windows-from-wsl.sh",
+    "desktop:install:windows": "bash scripts/build-windows-from-wsl.sh --install",
     "desktop:package-macos-dmg": "bash scripts/package-macos-dmg.sh"
   },
   "dependencies": {

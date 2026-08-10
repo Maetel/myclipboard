@@ -29,6 +29,16 @@ macOS에서는 저장소의 `MyMemo Clipboard Dev.command`를 더블클릭하면
 npm run desktop:dev
 ```
 
+Windows 앱은 WSL 터미널에서 다음 세 명령으로 최신 코드를 받고, 검증된 설치 파일을 만든 뒤 현재 사용자에게 설치하고 실행할 수 있습니다.
+
+```bash
+git switch main
+git pull --ff-only origin main
+npm run desktop:install:windows
+```
+
+이 명령은 WSL 경로를 Windows 컴파일러에 직접 넘기지 않습니다. 현재 commit의 깨끗한 복사본을 Windows 사용자 폴더의 `Build/mymemo-clipboard`에 준비한 뒤 `npm ci`, TypeScript·frontend 검사, Windows Rust test, NSIS build를 차례로 통과시킵니다. 기존에 실행 중인 MyMemo Clipboard를 종료하고 새 버전을 설치한 뒤 다시 실행합니다. 설치하지 않고 NSIS 파일만 만들려면 `npm run desktop:build:windows`를 사용합니다. 별도 빌드 경로가 필요하면 `MYMEMO_WINDOWS_BUILD_DIR`에 WSL 경로를 지정할 수 있습니다.
+
 ## 개발
 
 요구 사항:
@@ -38,13 +48,13 @@ npm run desktop:dev
 - Tauri 2의 [운영체제별 prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 ```bash
-npm install
+npm ci
 npm run typecheck
 npm run build
 npm run desktop:build
 ```
 
-Windows에서는 NSIS 설치 파일, macOS에서는 `.app`과 `.dmg`를 만듭니다. macOS 배포본은 실제 배포 전에 Developer ID 서명과 notarization이 필요합니다.
+`npm run desktop:build`는 현재 운영체제용 build입니다. Windows용 NSIS 설치 파일을 WSL에서 만들 때는 위의 `desktop:build:windows` 명령을 사용합니다. macOS에서는 `.app`과 `.dmg`를 만듭니다. macOS 배포본은 실제 배포 전에 Developer ID 서명과 notarization이 필요합니다.
 배포용 macOS DMG는 아래 명령으로 다시 패키징합니다. DMG 안에는 앱과
 `Applications` 폴더 바로가기가 함께 들어가므로 앱을 바로가기로 드래그해
 설치할 수 있습니다.
