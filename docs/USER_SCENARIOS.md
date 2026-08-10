@@ -173,3 +173,5 @@ Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나
 - 독립 MyMemo Clipboard에는 Claude/OpenUsage 연동이 없음을 다시 확인했습니다. 반복 창의 원인은 ad-hoc 개발 build가 이전 Keychain session과 history key를 읽는 경로였습니다.
 - macOS에서는 Keychain 의존을 제거하고 app config 아래 `secrets` 디렉터리를 `0700`, session·history key 파일을 `0600`으로 고정했습니다. 파일은 현재 사용자 소유의 regular file만 허용하고 `O_NOFOLLOW`, 열린 파일의 device/inode 재확인, 128-byte 상한과 exact secret 형식 검증을 적용합니다.
 - Windows는 기존 운영체제 보안 저장소를 계속 사용합니다. macOS 0.2.3 이하 사용자는 0.2.4에서 마이메모 계정으로 한 번 다시 로그인해야 하며, 예전 Keychain 항목은 자동으로 읽거나 삭제하지 않습니다.
+- Mac Studio에서 UX 회귀 검사, TypeScript 검사, Vite build와 Rust test 6개가 통과했고 arm64 `.app`·DMG를 만들었습니다. 완성 binary의 Keychain 관련 symbol과 macOS dependency tree의 `keyring`/`security-framework`가 모두 0개임을 확인했습니다.
+- 사용자 Applications 폴더에 0.2.4를 설치해 서명, bundle ID와 버전을 다시 확인했습니다. 연속으로 세 번 열어도 설치 경로의 process는 하나만 유지됐고 사용자 소유 `secrets` 디렉터리는 `0700`으로 생성됐습니다.
