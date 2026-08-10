@@ -22,6 +22,8 @@
 
 기대 결과는 웹과 앱이 `smallmemo_accounts.id` 하나를 사용자 기준으로 쓰고, 웹 cookie와 앱 `smc_` 세션을 섞지 않는 것입니다. 예전 `admin.memos.my` 설정은 옛 로컬 기록과 세션을 정리한 뒤 같은 마이메모 계정으로 한 번 다시 로그인하도록 안내합니다.
 
+릴리스 앱의 로그인 대상은 exact `https://memos.my`로 고정합니다. 사용자가 서버 주소를 입력하거나 임의 HTTPS origin으로 아이디·비밀번호를 보낼 수 없으며, 개발 중 로컬 HTTP 연결만 debug build에서 허용합니다.
+
 ### S2. 텍스트와 링크 복사
 
 1. 텍스트나 HTTP(S) 링크를 복사하면 현재 기기의 암호화된 로컬 기록에 먼저 들어갑니다.
@@ -30,6 +32,8 @@
 4. 다음 복사, 수동 동기화, 기록 창 열기 또는 앱 재시작 뒤 연결 복구에서 같은 event ID로 재전송합니다.
 
 기대 결과는 오프라인 항목의 순서가 유지되고, 응답 손실이나 반복 재시도에도 중복이 생기지 않는 것입니다.
+
+Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나 `CanIncludeInClipboardHistory`·`CanUploadToCloudClipboard`가 0이면 해당 내용은 로컬 기록에도 넣지 않고 서버에도 보내지 않습니다. 표시를 읽을 수 없는 경우에도 개인정보 보호를 우선해 캡처하지 않습니다.
 
 ### S3. 이미지와 일반 파일 하나 공유
 
@@ -81,6 +85,10 @@
 | V11 | 세션 폐기 직후 복사·썸네일·파일 요청의 각 401 경로 | 즉시 로그아웃 상태로 전환하고 로컬 비밀 데이터 삭제 | 코드 경로·정적 회귀 테스트 |
 | V12 | 키보드로 검색·방향키 이동·Enter·Escape, 보조 기술의 현재 선택 읽기 | 검색 입력과 listbox가 연결되고 현재 option이 전달됨 | TypeScript build·접근성 속성 회귀 테스트 |
 | V13 | 단축키를 바꾼 뒤 설정 화면 다시 열기 | 최근 기록 안내에도 저장한 실제 단축키가 표시됨 | TypeScript build·DOM 회귀 확인 |
+| V14 | 로그인 origin에 외부 HTTPS, 유사 도메인, 다른 port·path·userinfo 입력 | 모두 거부하고 exact `https://memos.my`만 허용 | Windows Rust unit test |
+| V15 | Windows 개인정보 보호 marker 없음·0·1·손상 조합 | marker 없음/명시적 1만 캡처, 제외/0/손상은 캡처하지 않음 | Windows Rust unit test |
+| V16 | 웹에서 허용되는 8~11자 기존 비밀번호로 앱 비밀번호 변경 | 현재 비밀번호 인증 가능, 새 비밀번호는 웹과 같은 8자 기준 | Windows Rust unit test |
+| V17 | keyring·로컬 파일·설정·단축키 정리 중 하나를 실패 처리 | 가능한 정리는 모두 시도하고 UI에 실패를 알리며 성공으로 표시하지 않음 | 코드 경로·native build 확인, fault injection 후속 |
 
 ## fresh-context 비판 검토에서 보강한 경계
 
@@ -94,6 +102,25 @@
 - 검색 결과의 선택을 `aria-activedescendant`로 전달하고 상태 변화를 live region으로 알립니다.
 - 진단용 기기 ID 뒷자리를 목록에서 제거하고 파일명도 검색 대상에 포함했습니다.
 - 사용자가 단축키를 바꿔도 기본 단축키만 안내하던 문구를 저장된 실제 값으로 바꿨습니다.
+- 로그인 서버를 사용자가 바꾸는 고급 입력을 제거하고 릴리스 통신 대상을 `memos.my`로 고정했습니다.
+- Windows 앱과 Cloud Clipboard가 함께 지키는 민감 콘텐츠 제외 marker를 캡처 전에 확인합니다.
+- 웹에서는 가입할 수 있지만 앱에서 비밀번호를 바꿀 수 없던 8~11자 기존 비밀번호를 허용하도록 정책을 맞췄습니다.
+- 로그아웃 정리 오류를 무시하지 않고 keyring·로컬 기록·설정·단축키 정리를 모두 시도한 뒤 실패를 사용자에게 알립니다.
+
+## 독립 감사에서 남은 위험과 다음 테스트
+
+이번 0.2.2 보강에서 즉시 악용되거나 사용자의 취소 의도를 뒤집는 항목을 먼저 막았습니다. 아래 항목은 독립 감사에서 확인했지만 더 큰 데이터 형식·서버 동시성·Windows lifecycle 변경이 필요해 아직 완료로 표시하지 않습니다.
+
+- Windows copy 알림은 boolean wake 하나라 느린 네트워크에서 빠르게 이어진 A/B/C 복사를 모두 보존한다는 보장이 없습니다. 게시보다 암호화 로컬 저장을 먼저 끝내고 별도 순서 queue가 보내도록 바꿔야 합니다.
+- 손상된 `history.enc`를 일부 경로가 빈 상태로 대체할 수 있고 offline pending 전체 byte 상한도 없습니다. 원본 보존, backpressure, 복구 UI가 필요합니다.
+- 파일 원본이 있는 동안의 20초 요청 확인과 앱 재시작 뒤 source 복원은 현재 유휴 문구와 맞지 않습니다. push/long-poll 또는 명시된 제한 polling lifecycle로 다시 설계해야 합니다.
+- single-instance와 Windows 로그인 후 자동 시작은 앱 자체에서 보장하지 않습니다. 중복 실행·재로그인 시나리오를 별도 릴리스 항목으로 구현해야 합니다.
+- managed image와 받은 파일이 로그아웃 전까지 평문으로 남고 downloads 정리 기간이 없습니다. 암호화 저장과 만료 정리가 필요합니다.
+- 웹에는 클립보드 항목 삭제 조작이 없어 quota 안내의 “기록 정리”를 바로 실행할 수 없습니다.
+- 서버 prune과 file request의 200개 초과·동시 요청·중복 소비에는 별도 통합 테스트와 원자적 claim이 필요합니다.
+- 팝업의 늦은 history 응답이 최신 결과를 덮지 않도록 request generation을 추가하고, 실제 NVDA/Narrator 검증과 origin 기기 이름 제공이 필요합니다.
+- Windows 파일은 복사 시 원문 hash를 읽지 않는 개인정보 보호 설계이므로 같은 path·크기·mtime을 유지한 교체까지는 감지하지 못합니다. file identity 고정 또는 선택 시 사용자 확인이 필요합니다.
+- `EmptyClipboard` 이후 write 실패와 `SendInput` 실패는 기존 Clipboard·대상 앱 결과를 완전히 복구하지 못합니다. fault injection과 관리자 권한 앱 경계 테스트가 필요합니다.
 
 ## Windows 릴리스 완료 기준
 
@@ -104,3 +131,12 @@
 5. V5의 직접 401 경로와 V8의 변경된 원본 거부를 확인합니다.
 6. 최종 설치본에서도 짧은 유휴 측정으로 network·Clipboard open·state write가 다시 생기지 않았는지 확인합니다.
 7. 임시 계정, 파일, 요청과 테스트 도구를 정리하고 원격 `main`과 릴리스 commit을 일치시킵니다.
+
+## 2026-08-10 0.2.2 보강 검증
+
+- 이전 결론을 전달하지 않은 별도 검토자가 `d835e27`의 문서·desktop·SmallMemo 서버를 다시 감사했습니다. 그 결과 중 임의 로그인 origin, Windows privacy marker 무시, 세션 폐기 정리 누락, 선택 중복·취소 뒤 지연 붙여넣기, 비밀번호 정책 불일치를 0.2.2에서 우선 보강했습니다.
+- Windows native Rust test 7개가 통과했습니다. exact origin 거부, privacy marker fail-closed, 8자 기존 비밀번호, selection single-flight·취소, 변경된 지연 전송 원본 거부와 서버 file-request `id` 호환을 포함합니다.
+- `npm run typecheck`, Vite build, Windows idle/privacy/static 회귀 검사가 통과했고, native release와 NSIS `MyMemo Clipboard_0.2.2_x64-setup.exe` 빌드가 완료됐습니다.
+- 설치된 physical/packaged Windows view는 모두 ProductVersion `0.2.2`, SHA-256 `38B2CBDD5ECC9A5807A44BD414AAECCF3804FD206EB0462EA4ED019FF33C5DC8`로 일치했습니다. 실행 process는 physical 설치 경로의 한 개였고 검사 시점의 TCP 연결은 0개였습니다.
+- SmallMemo는 변경 없이 전체 45개 test file의 294개 test, Svelte check, production build를 다시 통과했습니다. 독립 감사에서 찾은 server prune/file-request 동시성은 기존 test coverage가 없으므로 위의 남은 위험으로 유지합니다.
+- V9·V10의 native 상태 전이와 UI 중복 입력 방지는 자동 회귀로 확인했지만, 이 세션의 Windows Computer Use 연결은 WSL 작업 경로를 native file URI로 바꾸기 전에 실패했습니다. 따라서 설치본의 실제 더블클릭·대기 중 Escape 반복 조작은 아직 실기기 통과로 올리지 않았습니다.
