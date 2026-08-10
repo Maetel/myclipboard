@@ -24,6 +24,7 @@ const DEFAULT_SERVER: &str = "https://memos.my";
 const DEFAULT_SHORTCUT: &str = "Command+Shift+V";
 #[cfg(not(target_os = "macos"))]
 const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+V";
+#[cfg(target_os = "windows")]
 const KEYRING_SERVICE: &str = "my.memos.clipboard";
 const SESSION_KEY: &str = "session-token";
 const HISTORY_KEY: &str = "history-key";
@@ -92,6 +93,8 @@ struct ApiError {
 
 static SESSION_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static HISTORY_KEY_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static MACOS_SECRET_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 pub(crate) async fn run_blocking<T, F>(task: F) -> Result<T, String>
 where
@@ -111,12 +114,14 @@ fn secret_cache(account: &str) -> &'static Mutex<Option<String>> {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn keyring_entry(account: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, account)
         .map_err(|_| "운영체제 보안 저장소를 열 수 없습니다.".to_string())
 }
 
-fn load_keyring(account: &str) -> Result<String, String> {
+#[cfg(target_os = "windows")]
+fn load_platform_secret(account: &str) -> Result<String, String> {
     match keyring_entry(account)?.get_password() {
         Ok(value) => Ok(value),
         Err(keyring::Error::NoEntry) => Ok(String::new()),
@@ -124,10 +129,203 @@ fn load_keyring(account: &str) -> Result<String, String> {
     }
 }
 
-fn set_secret(account: &str, value: &str) -> Result<(), String> {
+#[cfg(target_os = "windows")]
+fn store_platform_secret(account: &str, value: &str) -> Result<(), String> {
     keyring_entry(account)?
         .set_password(value)
-        .map_err(|_| "운영체제 보안 저장소에 저장할 수 없습니다.".to_string())?;
+        .map_err(|_| "운영체제 보안 저장소에 저장할 수 없습니다.".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn delete_platform_secret(account: &str) -> Result<(), String> {
+    match keyring_entry(account)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err("운영체제 보안 저장소에서 삭제할 수 없습니다.".into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn secret_filename(account: &str) -> Result<&'static str, String> {
+    match account {
+        SESSION_KEY => Ok("session-token.secret"),
+        HISTORY_KEY => Ok("history-key.secret"),
+        _ => Err("로컬 보안 정보 이름이 올바르지 않습니다.".to_string()),
+    }
+}
+
+fn valid_secret_value(account: &str, value: &str) -> bool {
+    match account {
+        SESSION_KEY => {
+            value.len() == 47 && (value.starts_with("smc_") || value.starts_with("jmc_"))
+        }
+        HISTORY_KEY => value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_secret_root() -> Result<&'static PathBuf, String> {
+    MACOS_SECRET_ROOT
+        .get()
+        .ok_or_else(|| "로컬 보안 저장소가 준비되지 않았습니다.".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_private_macos_path(path: &Path, directory: bool) -> Result<fs::Metadata, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| "로컬 보안 저장소를 확인할 수 없습니다.".to_string())?;
+    if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+        return Err("로컬 보안 저장소 경로가 올바르지 않습니다.".to_string());
+    }
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+        return Err("로컬 보안 저장소 권한이 안전하지 않습니다.".to_string());
+    }
+    Ok(metadata)
+}
+
+#[cfg(target_os = "macos")]
+fn init_secret_store(app: &tauri::AppHandle) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?
+        .join("secrets");
+    match fs::symlink_metadata(&root) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err("로컬 보안 저장소 경로가 올바르지 않습니다.".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir_all(&root)
+            .map_err(|_| "로컬 보안 저장소를 만들 수 없습니다.".to_string())?,
+        Err(_) => return Err("로컬 보안 저장소를 확인할 수 없습니다.".to_string()),
+    }
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .map_err(|_| "로컬 보안 저장소 권한을 설정할 수 없습니다.".to_string())?;
+    validate_private_macos_path(&root, true)?;
+    match MACOS_SECRET_ROOT.set(root.clone()) {
+        Ok(()) => Ok(()),
+        Err(_) if MACOS_SECRET_ROOT.get() == Some(&root) => Ok(()),
+        Err(_) => Err("로컬 보안 저장소 경로가 바뀌었습니다.".to_string()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn init_secret_store(_app: &tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn load_platform_secret(account: &str) -> Result<String, String> {
+    use std::{
+        io::Read,
+        os::unix::fs::{MetadataExt, OpenOptionsExt},
+    };
+
+    let path = macos_secret_root()?.join(secret_filename(account)?);
+    let path_metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(_) => return Err("로컬 보안 정보를 확인할 수 없습니다.".to_string()),
+    };
+    validate_private_macos_path(&path, false)?;
+    if path_metadata.len() > 128 {
+        return Err("로컬 보안 정보가 올바르지 않습니다.".to_string());
+    }
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+        .map_err(|_| "로컬 보안 정보를 읽을 수 없습니다.".to_string())?;
+    let opened = file
+        .metadata()
+        .map_err(|_| "로컬 보안 정보를 확인할 수 없습니다.".to_string())?;
+    if path_metadata.dev() != opened.dev() || path_metadata.ino() != opened.ino() {
+        return Err("로컬 보안 정보가 읽는 동안 바뀌었습니다.".to_string());
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(129)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "로컬 보안 정보를 읽을 수 없습니다.".to_string())?;
+    let value =
+        String::from_utf8(bytes).map_err(|_| "로컬 보안 정보가 올바르지 않습니다.".to_string())?;
+    if !valid_secret_value(account, &value) {
+        return Err("로컬 보안 정보가 올바르지 않습니다.".to_string());
+    }
+    Ok(value)
+}
+
+#[cfg(target_os = "macos")]
+fn store_platform_secret(account: &str, value: &str) -> Result<(), String> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    if !valid_secret_value(account, value) {
+        return Err("로컬 보안 정보가 올바르지 않습니다.".to_string());
+    }
+    let root = macos_secret_root()?;
+    validate_private_macos_path(root, true)?;
+    let target = root.join(secret_filename(account)?);
+    let mut suffix = [0_u8; 8];
+    getrandom::fill(&mut suffix).map_err(|_| "임시 파일을 만들 수 없습니다.".to_string())?;
+    let temp = root.join(format!(".secret-{}.tmp", hex(&suffix)));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temp)
+            .map_err(|_| "로컬 보안 정보를 저장할 수 없습니다.".to_string())?;
+        file.write_all(value.as_bytes())
+            .map_err(|_| "로컬 보안 정보를 저장할 수 없습니다.".to_string())?;
+        file.sync_all()
+            .map_err(|_| "로컬 보안 정보를 저장할 수 없습니다.".to_string())?;
+        drop(file);
+        fs::rename(&temp, &target)
+            .map_err(|_| "로컬 보안 정보를 저장할 수 없습니다.".to_string())?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600))
+            .map_err(|_| "로컬 보안 저장소 권한을 설정할 수 없습니다.".to_string())?;
+        validate_private_macos_path(&target, false)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn delete_platform_secret(account: &str) -> Result<(), String> {
+    let path = macos_secret_root()?.join(secret_filename(account)?);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            validate_private_macos_path(&path, false)?;
+            fs::remove_file(path).map_err(|_| "로컬 보안 정보를 삭제할 수 없습니다.".to_string())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("로컬 보안 정보를 확인할 수 없습니다.".to_string()),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn load_platform_secret(_account: &str) -> Result<String, String> {
+    Ok(String::new())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn store_platform_secret(_account: &str, _value: &str) -> Result<(), String> {
+    Err("이 운영체제에서는 보안 저장소를 지원하지 않습니다.".to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn delete_platform_secret(_account: &str) -> Result<(), String> {
+    Ok(())
+}
+
+fn set_secret(account: &str, value: &str) -> Result<(), String> {
+    store_platform_secret(account, value)?;
     *secret_cache(account)
         .lock()
         .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())? = Some(value.to_string());
@@ -139,7 +337,7 @@ fn get_secret(account: &str) -> Result<String, String> {
         .lock()
         .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())?;
     if cache.is_none() {
-        *cache = Some(load_keyring(account)?);
+        *cache = Some(load_platform_secret(account)?);
     }
     Ok(cache.clone().unwrap_or_default())
 }
@@ -148,11 +346,7 @@ fn delete_secret(account: &str) -> Result<(), String> {
     *secret_cache(account)
         .lock()
         .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())? = Some(String::new());
-    match keyring_entry(account)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(_) => return Err("운영체제 보안 저장소에서 삭제할 수 없습니다.".into()),
-    }
-    Ok(())
+    delete_platform_secret(account)
 }
 
 pub(crate) fn history_key(create: bool) -> Result<[u8; 32], String> {
@@ -318,7 +512,7 @@ pub(crate) fn http_client() -> Result<reqwest::blocking::Client, String> {
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
-        .user_agent("mymemo-clipboard/0.2.3");
+        .user_agent("mymemo-clipboard/0.2.4");
     #[cfg(target_os = "windows")]
     let builder = builder.pool_max_idle_per_host(0);
     builder
@@ -331,7 +525,7 @@ pub(crate) fn file_http_client() -> Result<reqwest::blocking::Client, String> {
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(90))
-        .user_agent("mymemo-clipboard/0.2.3");
+        .user_agent("mymemo-clipboard/0.2.4");
     #[cfg(target_os = "windows")]
     let builder = builder.pool_max_idle_per_host(0);
     builder
@@ -673,6 +867,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            init_secret_store(app.handle())?;
             let open = MenuItem::with_id(app, "open", "설정 열기", true, None::<&str>)?;
             let history = MenuItem::with_id(app, "history", "클립보드 기록", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
@@ -736,5 +931,21 @@ mod tests {
         assert!(validate_new_password("12345678").is_ok());
         assert!(validate_current_password("").is_err());
         assert!(validate_new_password("1234567").is_err());
+    }
+
+    #[test]
+    fn local_secret_values_use_exact_shapes() {
+        assert!(valid_secret_value(
+            SESSION_KEY,
+            &format!("smc_{}", "A".repeat(43))
+        ));
+        assert!(valid_secret_value(
+            SESSION_KEY,
+            &format!("jmc_{}", "z".repeat(43))
+        ));
+        assert!(valid_secret_value(HISTORY_KEY, &"a1".repeat(32)));
+        assert!(!valid_secret_value(SESSION_KEY, "smc_short"));
+        assert!(!valid_secret_value(HISTORY_KEY, &"g0".repeat(32)));
+        assert!(!valid_secret_value("unknown", &"a".repeat(64)));
     }
 }

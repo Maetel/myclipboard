@@ -17,7 +17,7 @@
 
 | 우선순위 | 사용자가 겪는 문제 | 확인한 원인 | 개선 결정 | 완료 증거 |
 | --- | --- | --- | --- | --- |
-| P0 | 저장된 계정이 있어도 로그인 화면이 먼저 보이거나 시작이 늦음 | 로그인 panel이 기본 노출되고 `load_settings`의 `/me` 요청뿐 아니라 Tauri `setup`의 Keychain·단축키 복원이 main thread를 막음 | 시작 panel만 먼저 보이고, Keychain·단축키 복원과 session 확인은 worker에서 수행. 저장 session이 있으면 계정 화면으로 전환하고 session 폐기는 background sync에서 처리 | 저장 session 유무별 초기 DOM·command 검증, Mac main-thread sample·재실행 |
+| P0 | 앱을 다시 빌드해 실행할 때마다 macOS 사용자 로그인 비밀번호 창이 뜨고 시작이 늦음 | Ad-hoc 서명이 빌드마다 달라지는데 기존 Keychain session·history key를 다시 읽음 | macOS Keychain 접근을 삭제하고 앱 전용 사용자 폴더의 소유자 전용 디렉터리·파일(`0700`/`0600`)로 교체. Windows 운영체제 보안 저장소는 유지 | source에 macOS `apple-native` 의존과 Keychain 호출이 없음, Mac binary symbol·재실행 확인 |
 | P0 | Mac에서 기록 창을 열면 앱이 멈춘 것처럼 보임 | `clipboard_history`가 암호화 파일 읽기·복호화를 main thread command에서 수행 | 기록·썸네일 command를 async + blocking worker로 이동하고 목록에 loading/오류/재시도 상태 제공 | UI heartbeat와 목록 열기 실기기 확인 |
 | P0 | 원격 파일을 더블클릭하면 최대 45초 동안 앱이 멈춤 | `clipboard_select`가 polling·download·파일 쓰기·sleep을 main thread에서 수행 | 전체 선택 작업을 blocking worker로 이동. 행 spinner·경과 시간·Escape 취소를 유지하고 중복 실행 차단 | 대기 중 검색창·Escape 반응, 지연 응답 뒤 붙여넣기 없음 |
 | P1 | 파일이 텍스트와 비슷하게 보여 무엇인지 바로 알기 어려움 | 종류는 작은 meta 문구에만 표시 | 파일 행과 최근 기록에 색상 이외의 파일 icon과 `파일` 문구를 함께 표시 | DOM·접근성 이름 확인 |
@@ -33,12 +33,12 @@
 ## 이번 개선 범위 밖에서 추적할 항목
 
 - 원격 파일의 정확한 byte 진행률은 현재 서버 API가 길이 기반 stream progress를 제공하지 않아 표시할 수 없습니다. 이번에는 경과 시간과 취소 가능 상태를 정확히 보여 주고, 추후 channel/stream 방식에서 실제 진행률을 추가합니다.
-- Keychain 권한 prompt 자체는 운영체제가 소유합니다. prompt가 필요한 경우에도 WebView main thread를 막지 않도록 읽기를 worker에서 수행합니다.
+- 0.2.3까지 만든 예전 Keychain 항목은 앱이 자동으로 읽거나 삭제하지 않습니다. 0.2.4에서 마이메모 계정으로 한 번 다시 로그인해 새 로컬 저장 파일을 만들며, 필요하면 사용자가 Keychain Access에서 예전 `my.memos.clipboard` 항목을 직접 정리할 수 있습니다.
 - macOS 서명·notarization과 최초 실행 권한 안내는 별도 release gate입니다. 기능 응답성 개선 완료와 배포 신뢰 완료를 같은 것으로 표시하지 않습니다.
 
 ## 완료 조건
 
-1. 저장 session이 있으면 로그인 form을 한 번도 보여 주지 않고 계정 화면으로 이동합니다.
+1. macOS 사용자 로그인 비밀번호 창을 열지 않으며, 저장 session이 있으면 로그인 form을 한 번도 보여 주지 않고 계정 화면으로 이동합니다.
 2. 기록·썸네일·파일 전송·로그인 관련 blocking 작업이 main thread command에 남지 않습니다.
 3. 기록 loading과 파일 받기 중 창 애니메이션·검색 입력·Escape가 반응합니다.
 4. file 행은 icon, 파일명, 크기, 상대 시각을 함께 표시하고 원래 파일명으로 붙여넣습니다.

@@ -101,7 +101,7 @@ async function load(showStartup = false) {
     slowHint = window.setTimeout(() => {
       if (generation !== loadGeneration || startupPanel.hidden) return;
       (startupPanel.querySelector('p') as HTMLElement).textContent =
-        'macOS에서 보안 저장소 확인 창이 열렸다면 접근을 허용해 주세요.';
+        '저장된 기록을 확인하는 데 평소보다 오래 걸리고 있습니다.';
     }, 4000);
   }
   try {

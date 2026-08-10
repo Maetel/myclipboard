@@ -70,8 +70,8 @@ Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나
 
 ### S7. 저장된 계정으로 시작하고 기록을 둘러보기
 
-1. 유효한 앱 로그인 정보가 보안 저장소에 있으면 시작 화면에서 계정을 확인한 뒤 로그인 화면을 거치지 않고 계정 화면으로 이동합니다.
-2. macOS Keychain 확인이 늦어져도 설정 창은 계속 그려지고, 4초가 지나면 운영체제의 보안 저장소 확인 창을 살펴보라는 안내가 나타납니다.
+1. 유효한 앱 로그인 정보가 로컬 저장소에 있으면 시작 화면에서 계정을 확인한 뒤 로그인 화면을 거치지 않고 계정 화면으로 이동합니다.
+2. macOS 앱은 Keychain을 조회하지 않으며 사용자 로그인 비밀번호 창을 열지 않습니다. 0.2.3 이하에서 처음 올린 경우에만 마이메모 계정으로 한 번 다시 로그인합니다.
 3. 최근 기록과 기록 팝업에서 파일은 파일 아이콘과 `파일` 문구, 원래 파일명으로 구분합니다.
 4. 기록을 불러오는 동안에는 진행 상태를 보이고, 실패하면 기존 목록을 지운 빈 화면 대신 오류와 `다시 시도`를 제공합니다.
 5. 썸네일은 화면 가까이에 들어온 항목만 불러오며, 연속 갱신이나 늦은 응답이 검색어·현재 선택·스크롤 위치를 되돌리지 않습니다.
@@ -98,7 +98,7 @@ Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나
 | V15 | Windows 개인정보 보호 marker 없음·0·1·손상 조합 | marker 없음/명시적 1만 캡처, 제외/0/손상은 캡처하지 않음 | Windows Rust unit test |
 | V16 | 웹에서 허용되는 8~11자 기존 비밀번호로 앱 비밀번호 변경 | 현재 비밀번호 인증 가능, 새 비밀번호는 웹과 같은 8자 기준 | Windows Rust unit test |
 | V17 | keyring·로컬 파일·설정·단축키 정리 중 하나를 실패 처리 | 가능한 정리는 모두 시도하고 UI에 실패를 알리며 성공으로 표시하지 않음 | 코드 경로·native build 확인, fault injection 후속 |
-| V18 | 저장된 로그인 정보가 있는 상태에서 앱 시작 | 로그인 화면을 노출하지 않고 계정 화면으로 이동, Keychain 대기 중에도 주 화면 스레드 반응 | DOM 회귀 검사 + Mac 주 화면 스레드 표본 |
+| V18 | 저장된 로그인 정보가 있는 상태에서 macOS 앱을 반복 실행 | 사용자 로그인 비밀번호 창 없이 계정 화면으로 이동하고 process 하나만 유지 | 정적 회귀 검사 + Mac 반복 실행 |
 | V19 | 기록 창 열기·최근 기록 읽기·썸네일 읽기가 느림 | 창과 검색 입력은 반응하고 불러오기·오류·재시도 상태를 표시 | 비동기 worker·팝업 회귀 검사 + Mac 주 화면 스레드 표본 |
 | V20 | 원격 파일 더블클릭 뒤 최대 45초 대기 | 행 진행 표시·경과 시간·취소 안내 표시, 중복 요청 차단, Escape 즉시 처리 | 선택 상태·팝업 회귀 검사; Mac 화면 반복 조작은 후속 |
 | V21 | 파일 기록과 받은 파일을 Finder/Explorer에서 확인 | 파일 아이콘·`파일` 문구·원래 파일명 표시, Clipboard에는 실제 파일 목록 형식 적용 | DOM 회귀 검사 + Windows/macOS native code 확인 |
@@ -167,3 +167,9 @@ Windows Clipboard에 `ExcludeClipboardContentFromMonitorProcessing`이 있거나
 - Tauri 단일 실행 인스턴스 플러그인을 가장 먼저 등록했습니다. Mac Studio에서 앱을 연속 두 번 실행한 뒤 process가 하나만 남는 것을 확인했습니다.
 - 기존 자동 검증에서는 TypeScript, Vite, UX 정적 회귀, Windows 정적 회귀, Windows Rust 7개, Mac Rust 5개가 통과했습니다. Windows 0.2.3 설치 파일과 Mac arm64 `.app`·DMG도 생성했고 DMG 구조 검증을 통과했습니다. 사용자의 이후 요청에 따라 이 문서 갱신 세션에서는 테스트를 다시 실행하지 않았습니다.
 - MacBook이 연결되지 않았고 Mac Studio 화면이 잠겨 있어 Mac A에서 Mac B로 실제 파일을 보내고 B에서 더블클릭·Escape를 반복하는 최종 실기기 흐름은 아직 통과로 올리지 않습니다. 이는 코드·native build 완료와 별개인 남은 실제 조작 검증입니다.
+
+## 2026-08-10 0.2.4 macOS 비밀번호 창 제거
+
+- 독립 MyMemo Clipboard에는 Claude/OpenUsage 연동이 없음을 다시 확인했습니다. 반복 창의 원인은 ad-hoc 개발 build가 이전 Keychain session과 history key를 읽는 경로였습니다.
+- macOS에서는 Keychain 의존을 제거하고 app config 아래 `secrets` 디렉터리를 `0700`, session·history key 파일을 `0600`으로 고정했습니다. 파일은 현재 사용자 소유의 regular file만 허용하고 `O_NOFOLLOW`, 열린 파일의 device/inode 재확인, 128-byte 상한과 exact secret 형식 검증을 적용합니다.
+- Windows는 기존 운영체제 보안 저장소를 계속 사용합니다. macOS 0.2.3 이하 사용자는 0.2.4에서 마이메모 계정으로 한 번 다시 로그인해야 하며, 예전 Keychain 항목은 자동으로 읽거나 삭제하지 않습니다.

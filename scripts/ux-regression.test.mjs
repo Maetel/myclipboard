@@ -8,6 +8,7 @@ const main = read('src/main.ts');
 const popup = read('src/popup.ts');
 const mainHtml = read('index.html');
 const popupHtml = read('popup.html');
+const cargo = read('src-tauri/Cargo.toml');
 
 for (const command of [
   'load_settings', 'login', 'change_password', 'logout', 'save_preferences', 'sync_now',
@@ -34,7 +35,13 @@ assert.doesNotMatch(app.slice(settingsStart, settingsEnd), /"\/me"|\.send\(\)/);
 assert.match(mainHtml, /id="startupPanel"/);
 assert.match(mainHtml, /id="loginPanel"[^>]*hidden/);
 assert.match(main, /startupPanel\.hidden = true/);
-assert.match(main, /보안 저장소 확인 창이 열렸다면 접근을 허용/);
+assert.doesNotMatch(main, /보안 저장소 확인 창|Keychain|키체인/);
+assert.match(app, /MACOS_SECRET_ROOT/);
+assert.match(app, /Permissions::from_mode\(0o700\)/);
+assert.match(app, /\.mode\(0o600\)/);
+assert.match(app, /custom_flags\(libc::O_NOFOLLOW\)/);
+assert.doesNotMatch(cargo, /apple-native/);
+assert.match(cargo, /\[target\.'cfg\(windows\)'\.dependencies\][\s\S]*keyring/);
 assert.match(main, /kind === 'file' \? '📄'/);
 assert.match(popup, /item\.kind === 'file' \? '📄'/);
 
