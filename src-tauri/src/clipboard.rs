@@ -1619,36 +1619,21 @@ pub fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String>
 
 #[cfg(target_os = "macos")]
 fn read_file_clipboard() -> Result<Option<PathBuf>, String> {
-    let script = "ObjC.import('AppKit');function run(){const p=$.NSPasteboard.generalPasteboard;const v=p.readObjectsForClassesOptions([$.NSURL],{NSPasteboardURLReadingFileURLsOnlyKey:true});if(!v||Number(v.count)!==1)return '';return ObjC.unwrap(v.objectAtIndex(0).path)}";
-    let output = Command::new("/usr/bin/osascript")
-        .args(["-l", "JavaScript", "-e", script])
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Ok(None);
+    let mut clipboard = Clipboard::new()
+        .map_err(|_| "macOS 클립보드를 열 수 없습니다.".to_string())?;
+    match clipboard.get().file_list() {
+        Ok(mut paths) if paths.len() == 1 => Ok(paths.pop()),
+        Ok(paths) if paths.is_empty() => Ok(None),
+        Ok(_) => Err("파일은 한 번에 하나만 공유할 수 있습니다.".into()),
+        Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(_) => Err("복사한 파일 정보를 읽을 수 없습니다.".into()),
     }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok((!path.is_empty()).then(|| PathBuf::from(path)))
 }
 #[cfg(target_os = "macos")]
 fn write_file_clipboard(path: &Path) -> Result<(), String> {
-    let script = "ObjC.import('AppKit');function run(argv){const p=$.NSPasteboard.generalPasteboard;p.clearContents;return p.writeObjects([$.NSURL.fileURLWithPath($(argv[0]))])?'ok':'fail'}";
-    let output = Command::new("/usr/bin/osascript")
-        .args([
-            "-l",
-            "JavaScript",
-            "-e",
-            script,
-            "--",
-            &path.to_string_lossy(),
-        ])
-        .output()
-        .map_err(|error| error.to_string())?;
-    if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "ok" {
-        Ok(())
-    } else {
-        Err("파일을 클립보드에 넣지 못했습니다.".into())
-    }
+    Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set().file_list(&[path]))
+        .map_err(|_| "파일을 클립보드에 넣지 못했습니다.".to_string())
 }
 #[cfg(target_os = "macos")]
 fn read_clipboard() -> Result<Option<String>, String> {
