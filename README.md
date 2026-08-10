@@ -7,7 +7,7 @@
 1. `https://memos.my/login`에서 자유롭게 가입합니다.
 2. 앱에서 같은 아이디와 비밀번호로 로그인합니다.
 3. 텍스트, HTTP(S) 링크, 이미지 또는 일반 파일 하나를 복사합니다.
-4. 마이메모 웹의 **기기 간 클립보드**에서 기록을 확인하거나, 다른 기기에서 `Ctrl+Shift+V`를 눌러 붙여넣습니다.
+4. 마이메모 웹의 **기기 간 클립보드**에서 기록을 확인하거나, Windows에서는 `Ctrl+Shift+V`, macOS에서는 `Command+Shift+V`를 눌러 붙여넣습니다.
 5. 기록 창에서 방향키와 Enter 또는 마우스로 항목을 선택합니다. 마음이 바뀌면 Escape를 누르거나 창 밖을 클릭하면 아무것도 붙여넣지 않고 닫힙니다.
 
 비밀번호는 기기에 저장하지 않습니다. 로그인 세션과 로컬 기록 암호화 키는 운영체제 보안 저장소에 보관하며, 로컬 기록과 전송 대기 항목은 AES-256-GCM으로 암호화합니다. 서버는 계정별 기록을 분리하고 7일 또는 최근 500개까지만 보관합니다.
@@ -27,6 +27,13 @@ macOS에서는 저장소의 `MyMemo Clipboard Dev.command`를 더블클릭하면
 
 ```bash
 npm run desktop:dev
+```
+
+macOS 설치용 `.app`과 `.dmg`를 만들려면 다음 명령을 사용합니다.
+
+```bash
+npm ci
+npm run desktop:build:macos
 ```
 
 Windows 앱은 WSL 터미널에서 다음 세 명령으로 최신 코드를 받고, 검증된 설치 파일을 만든 뒤 현재 사용자에게 설치하고 실행할 수 있습니다.
@@ -54,7 +61,7 @@ npm run build
 npm run desktop:build
 ```
 
-`npm run desktop:build`는 현재 운영체제용 build입니다. Windows용 NSIS 설치 파일을 WSL에서 만들 때는 위의 `desktop:build:windows` 명령을 사용합니다. macOS에서는 `.app`과 `.dmg`를 만듭니다. macOS 배포본은 실제 배포 전에 Developer ID 서명과 notarization이 필요합니다.
+`npm run desktop:build`는 Tauri의 기본 build입니다. Windows용 NSIS 설치 파일을 WSL에서 만들 때는 위의 `desktop:build:windows`, macOS용 `.app`과 `.dmg`를 만들 때는 `desktop:build:macos`를 사용합니다. macOS 배포본은 실제 배포 전에 Developer ID 서명과 notarization이 필요합니다.
 배포용 macOS DMG는 아래 명령으로 다시 패키징합니다. DMG 안에는 앱과
 `Applications` 폴더 바로가기가 함께 들어가므로 앱을 바로가기로 드래그해
 설치할 수 있습니다.

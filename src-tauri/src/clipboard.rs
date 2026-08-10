@@ -5,6 +5,8 @@ use image::{DynamicImage, ImageFormat, RgbaImage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "windows")]
+use std::sync::Condvar;
 use std::{
     borrow::Cow,
     fs,
@@ -12,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Condvar, Mutex, OnceLock,
+        Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -1367,14 +1369,21 @@ pub fn show_popup(app: &tauri::AppHandle) {
 pub fn clipboard_dismiss(app: tauri::AppHandle) {
     hide_popup(&app)
 }
-#[tauri::command]
-pub fn clipboard_history(app: tauri::AppHandle) -> Result<Vec<ClipboardItem>, String> {
-    Ok(load_state(&app).unwrap_or_default().items)
+
+fn clipboard_history_blocking(app: tauri::AppHandle) -> Result<Vec<ClipboardItem>, String> {
+    Ok(load_state(&app)?.items)
 }
 
 #[tauri::command]
-pub fn clipboard_thumbnail(app: tauri::AppHandle, id: String) -> Result<Option<String>, String> {
-    let state = load_state(&app).unwrap_or_default();
+pub async fn clipboard_history(app: tauri::AppHandle) -> Result<Vec<ClipboardItem>, String> {
+    super::run_blocking(move || clipboard_history_blocking(app)).await
+}
+
+fn clipboard_thumbnail_blocking(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Option<String>, String> {
+    let state = load_state(&app)?;
     if let Some(pending) = state.pending.iter().find(|item| item.local_id == id) {
         return Ok(pending.thumbnail_base64.as_ref().map(|value| {
             format!(
@@ -1429,6 +1438,14 @@ pub fn clipboard_thumbnail(app: tauri::AppHandle, id: String) -> Result<Option<S
         return Err("썸네일이 너무 큽니다.".into());
     }
     Ok(Some(format!("data:{mime};base64,{}", BASE64.encode(bytes))))
+}
+
+#[tauri::command]
+pub async fn clipboard_thumbnail(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Option<String>, String> {
+    super::run_blocking(move || clipboard_thumbnail_blocking(app, id)).await
 }
 
 fn request_file(
@@ -1568,8 +1585,7 @@ fn write_image_clipboard(bytes: &[u8]) -> Result<String, String> {
     Ok(hash)
 }
 
-#[tauri::command]
-pub fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String> {
+fn clipboard_select_blocking(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let selection = selection_state().begin()?;
     let state = load_state(&app)?;
     let item = state
@@ -1597,7 +1613,14 @@ pub fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String>
             write_image_clipboard(&bytes)?
         } else {
             let filename = item.filename.as_deref().unwrap_or(&item.text);
-            let path = downloads_dir(&app)?.join(format!("{}-{filename}", item.id));
+            let filename = Path::new(filename)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "파일 이름이 올바르지 않습니다.".to_string())?;
+            let directory = downloads_dir(&app)?.join(hex(&Sha256::digest(item.id.as_bytes())));
+            fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+            let path = directory.join(filename);
             super::atomic_write(&path, &bytes)?;
             selection.ensure_not_cancelled()?;
             write_file_clipboard(&path)?;
@@ -1617,10 +1640,15 @@ pub fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String>
     Ok(())
 }
 
+#[tauri::command]
+pub async fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    super::run_blocking(move || clipboard_select_blocking(app, id)).await
+}
+
 #[cfg(target_os = "macos")]
 fn read_file_clipboard() -> Result<Option<PathBuf>, String> {
-    let mut clipboard = Clipboard::new()
-        .map_err(|_| "macOS 클립보드를 열 수 없습니다.".to_string())?;
+    let mut clipboard =
+        Clipboard::new().map_err(|_| "macOS 클립보드를 열 수 없습니다.".to_string())?;
     match clipboard.get().file_list() {
         Ok(mut paths) if paths.len() == 1 => Ok(paths.pop()),
         Ok(paths) if paths.is_empty() => Ok(None),

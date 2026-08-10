@@ -20,6 +20,9 @@ use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 const DEFAULT_SERVER: &str = "https://memos.my";
+#[cfg(target_os = "macos")]
+const DEFAULT_SHORTCUT: &str = "Command+Shift+V";
+#[cfg(not(target_os = "macos"))]
 const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+V";
 const KEYRING_SERVICE: &str = "my.memos.clipboard";
 const SESSION_KEY: &str = "session-token";
@@ -87,18 +90,24 @@ struct ApiError {
     error: String,
 }
 
-pub struct AppState {
-    sync_lock: Mutex<()>,
+static SESSION_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static HISTORY_KEY_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+pub(crate) async fn run_blocking<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|_| "작업을 마치지 못했습니다. 다시 시도해 주세요.".to_string())?
 }
 
-static SESSION_CACHE: OnceLock<Mutex<String>> = OnceLock::new();
-static HISTORY_KEY_CACHE: OnceLock<Mutex<String>> = OnceLock::new();
-
-fn secret_cache(account: &str) -> &'static Mutex<String> {
+fn secret_cache(account: &str) -> &'static Mutex<Option<String>> {
     if account == SESSION_KEY {
-        SESSION_CACHE.get_or_init(|| Mutex::new(load_keyring(account).unwrap_or_default()))
+        SESSION_CACHE.get_or_init(|| Mutex::new(None))
     } else {
-        HISTORY_KEY_CACHE.get_or_init(|| Mutex::new(load_keyring(account).unwrap_or_default()))
+        HISTORY_KEY_CACHE.get_or_init(|| Mutex::new(None))
     }
 }
 
@@ -121,21 +130,24 @@ fn set_secret(account: &str, value: &str) -> Result<(), String> {
         .map_err(|_| "운영체제 보안 저장소에 저장할 수 없습니다.".to_string())?;
     *secret_cache(account)
         .lock()
-        .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())? = value.to_string();
+        .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())? = Some(value.to_string());
     Ok(())
 }
 
 fn get_secret(account: &str) -> Result<String, String> {
-    secret_cache(account)
+    let mut cache = secret_cache(account)
         .lock()
-        .map(|value| value.clone())
-        .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())
+        .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())?;
+    if cache.is_none() {
+        *cache = Some(load_keyring(account)?);
+    }
+    Ok(cache.clone().unwrap_or_default())
 }
 
 fn delete_secret(account: &str) -> Result<(), String> {
     *secret_cache(account)
         .lock()
-        .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())? = String::new();
+        .map_err(|_| "보안 저장소 상태를 읽을 수 없습니다.".to_string())? = Some(String::new());
     match keyring_entry(account)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(_) => return Err("운영체제 보안 저장소에서 삭제할 수 없습니다.".into()),
@@ -306,7 +318,7 @@ pub(crate) fn http_client() -> Result<reqwest::blocking::Client, String> {
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
-        .user_agent("mymemo-clipboard/0.2.2");
+        .user_agent("mymemo-clipboard/0.2.3");
     #[cfg(target_os = "windows")]
     let builder = builder.pool_max_idle_per_host(0);
     builder
@@ -319,7 +331,7 @@ pub(crate) fn file_http_client() -> Result<reqwest::blocking::Client, String> {
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(90))
-        .user_agent("mymemo-clipboard/0.2.2");
+        .user_agent("mymemo-clipboard/0.2.3");
     #[cfg(target_os = "windows")]
     let builder = builder.pool_max_idle_per_host(0);
     builder
@@ -347,8 +359,7 @@ pub(crate) fn clear_local_auth(app: &tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
+fn load_settings_blocking(app: tauri::AppHandle) -> Result<PublicSettings, String> {
     let mut settings = read_settings(&app)?;
     if reqwest::Url::parse(&settings.server_url)
         .ok()
@@ -363,20 +374,7 @@ fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
         settings.account_migration_required = true;
         write_settings(&app, &settings)?;
     }
-    let mut token = session_token()?;
-    if !token.is_empty() {
-        let unauthorized = http_client()
-            .and_then(|client| endpoint(&settings.server_url, "/me").map(|url| (client, url)))
-            .ok()
-            .and_then(|(client, url)| client.get(url).bearer_auth(&token).send().ok())
-            .is_some_and(|response| response.status() == reqwest::StatusCode::UNAUTHORIZED);
-        if unauthorized {
-            clear_local_auth(&app)?;
-            token.clear();
-            settings.username.clear();
-            settings.display_name.clear();
-        }
-    }
+    let token = session_token()?;
     Ok(PublicSettings {
         server_url: settings.server_url,
         username: settings.username,
@@ -390,7 +388,11 @@ fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
 }
 
 #[tauri::command]
-fn login(
+async fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
+    run_blocking(move || load_settings_blocking(app)).await
+}
+
+fn login_blocking(
     app: tauri::AppHandle,
     server_url: String,
     username: String,
@@ -441,6 +443,16 @@ fn login(
     Ok(())
 }
 
+#[tauri::command]
+async fn login(
+    app: tauri::AppHandle,
+    server_url: String,
+    username: String,
+    password: String,
+) -> Result<(), String> {
+    run_blocking(move || login_blocking(app, server_url, username, password)).await
+}
+
 fn validate_current_password(password: &str) -> Result<(), String> {
     if password.is_empty() || password.encode_utf16().count() > 256 {
         return Err("현재 비밀번호를 입력해 주세요.".into());
@@ -456,8 +468,7 @@ fn validate_new_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn change_password(
+fn change_password_blocking(
     app: tauri::AppHandle,
     current_password: String,
     new_password: String,
@@ -507,7 +518,15 @@ fn change_password(
 }
 
 #[tauri::command]
-fn logout(app: tauri::AppHandle) -> Result<(), String> {
+async fn change_password(
+    app: tauri::AppHandle,
+    current_password: String,
+    new_password: String,
+) -> Result<(), String> {
+    run_blocking(move || change_password_blocking(app, current_password, new_password)).await
+}
+
+fn logout_blocking(app: tauri::AppHandle) -> Result<(), String> {
     let settings = read_settings(&app)?;
     let token = session_token().unwrap_or_default();
     if !token.is_empty() {
@@ -521,7 +540,15 @@ fn logout(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn save_preferences(app: tauri::AppHandle, enabled: bool, shortcut: String) -> Result<(), String> {
+async fn logout(app: tauri::AppHandle) -> Result<(), String> {
+    run_blocking(move || logout_blocking(app)).await
+}
+
+fn save_preferences_blocking(
+    app: tauri::AppHandle,
+    enabled: bool,
+    shortcut: String,
+) -> Result<(), String> {
     clipboard::validate_shortcut(&shortcut)?;
     let previous = read_settings(&app)?;
     let mut next = previous.clone();
@@ -542,11 +569,15 @@ fn save_preferences(app: tauri::AppHandle, enabled: bool, shortcut: String) -> R
 }
 
 #[tauri::command]
-fn sync_now(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let _guard = state
-        .sync_lock
-        .try_lock()
-        .map_err(|_| "이미 동기화 중입니다.".to_string())?;
+async fn save_preferences(
+    app: tauri::AppHandle,
+    enabled: bool,
+    shortcut: String,
+) -> Result<(), String> {
+    run_blocking(move || save_preferences_blocking(app, enabled, shortcut)).await
+}
+
+fn sync_now_blocking(app: tauri::AppHandle) -> Result<(), String> {
     match clipboard::sync_now(&app) {
         Err(error) if error == AUTH_REQUIRED => {
             clear_local_auth(&app)?;
@@ -554,6 +585,11 @@ fn sync_now(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<
         }
         result => result,
     }
+}
+
+#[tauri::command]
+async fn sync_now(app: tauri::AppHandle) -> Result<(), String> {
+    run_blocking(move || sync_now_blocking(app)).await
 }
 
 #[cfg(target_os = "windows")]
@@ -593,9 +629,6 @@ fn show_main_window(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState {
-            sync_lock: Mutex::new(()),
-        })
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _, event| {
@@ -662,11 +695,11 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("failed to build MyMemo Clipboard")
-        .run(|_, event| {
+        .run(|_, _event| {
             #[cfg(target_os = "windows")]
             if let tauri::RunEvent::ExitRequested {
                 code: None, api, ..
-            } = event
+            } = _event
             {
                 api.prevent_exit();
             }

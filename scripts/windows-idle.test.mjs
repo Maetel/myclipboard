@@ -63,7 +63,7 @@ assert.match(source, /selection\.ensure_not_cancelled\(\)\?/);
 assert.match(source, /selection_state\(\)\.close_popup\(\)/);
 assert.ok(source.match(/StatusCode::UNAUTHORIZED[\s\S]{0,180}clear_local_auth/g)?.length >= 4);
 assert.match(popupSource, /if \(selecting\) return/);
-assert.match(popupSource, /Esc를 누르면 취소합니다/);
+assert.match(popupSource, /Esc로 취소/);
 assert.match(popupSource, /aria-activedescendant/);
 assert.doesNotMatch(popupSource, /origin_device_id\.slice/);
 assert.match(popupHtml, /aria-activedescendant|aria-controls="clipboardItems"/);

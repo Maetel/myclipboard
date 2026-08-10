@@ -3,7 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_path="${1:-$repo_root/src-tauri/target/release/bundle/macos/MyMemo Clipboard.app}"
-output_path="${2:-$repo_root/release/MyMemo Clipboard_0.1.0_aarch64.dmg}"
+version="$(node -p "require('$repo_root/package.json').version")"
+output_path="${2:-$repo_root/release/MyMemo Clipboard_${version}_$(uname -m).dmg}"
 
 [[ "$(uname -s)" == Darwin ]] || { echo "macOS is required" >&2; exit 2; }
 [[ -d "$app_path" && ! -L "$app_path" ]] || { echo "app bundle not found: $app_path" >&2; exit 2; }

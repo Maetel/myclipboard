@@ -2,9 +2,13 @@
 <html lang="ko">
   <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MyMemo Clipboard</title></head>
   <body>
-    <main class="app-shell">
+    <main id="appShell" class="app-shell" aria-busy="true">
       <header><div><p class="eyebrow">MyMemo Clipboard</p><h1>내 기기 사이에서 바로 붙여넣기</h1><p class="intro">마이메모 계정 하나로 복사 기록을 웹과 다른 기기에서 확인합니다.</p></div><div id="connection" class="connection" role="status">확인 중</div></header>
-      <section id="loginPanel" class="panel">
+      <section id="startupPanel" class="panel startup-panel" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <div><h2>저장된 계정을 확인하는 중…</h2><p>확인이 끝나면 바로 클립보드 동기화를 시작합니다.</p><button id="startupRetry" class="quiet" type="button" hidden>다시 시도</button></div>
+      </section>
+      <section id="loginPanel" class="panel" hidden>
         <div class="section-heading"><div><h2>로그인</h2><p>memos.my에서 사용하는 아이디와 비밀번호를 입력해 주세요. 계정이 없으면 <a href="https://memos.my/login" target="_blank" rel="noreferrer">마이메모에서 가입</a>할 수 있습니다.</p></div></div>
         <form id="loginForm" class="form-grid">
           <label>아이디<input id="username" autocomplete="username" required></label>
@@ -20,7 +24,7 @@
         <form id="settingsForm" class="form-grid">
           <label class="toggle wide"><input id="enabled" type="checkbox" checked><span><strong>클립보드 동기화</strong><small>끄면 이 기기의 로컬 기록과 암호화 키를 삭제합니다.</small></span></label>
           <label class="wide">기록 열기 단축키<div class="shortcut-row"><input id="shortcut" value="Ctrl+Shift+V" required><button id="resetShortcut" type="button" class="quiet">기본값</button></div></label>
-          <div class="form-actions wide"><button class="primary" type="submit">설정 저장</button><button id="syncNow" type="button" class="quiet">지금 동기화</button></div>
+          <div class="form-actions wide"><button id="settingsButton" class="primary" type="submit">설정 저장</button><button id="syncNow" type="button" class="quiet">지금 동기화</button></div>
         </form>
       </section>
       <section id="securityPanel" class="panel" hidden>

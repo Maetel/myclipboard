@@ -1,16 +1,18 @@
 {
   "name": "mymemo-clipboard",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test:windows-idle": "node scripts/windows-idle.test.mjs",
+    "test:ux": "node scripts/ux-regression.test.mjs",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
+    "desktop:build:macos": "tauri build --config src-tauri/tauri.macos.conf.json && bash scripts/package-macos-dmg.sh",
     "desktop:build:windows": "bash scripts/build-windows-from-wsl.sh",
     "desktop:install:windows": "bash scripts/build-windows-from-wsl.sh --install",
     "desktop:package-macos-dmg": "bash scripts/package-macos-dmg.sh"
