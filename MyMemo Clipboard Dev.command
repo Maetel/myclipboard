@@ -37,4 +37,13 @@ if [[ ! -d node_modules || "$dependencies_changed" == true ]]; then
   npm install
 fi
 
+dev_port=1421
+if command -v lsof >/dev/null 2>&1; then
+  dev_port_pids=$(lsof -ti "tcp:${dev_port}" 2>/dev/null || true)
+  if [[ -n "$dev_port_pids" ]]; then
+    print "포트 ${dev_port}을 사용 중인 프로세스를 종료합니다: ${dev_port_pids}"
+    kill -9 ${=dev_port_pids} 2>/dev/null || true
+  fi
+fi
+
 exec npm run desktop:dev
