@@ -90,6 +90,7 @@ async function refreshHistory() {
 
 async function load(showStartup = false) {
   const generation = ++loadGeneration;
+  let slowHint: number | undefined;
   if (showStartup) {
     startupPanel.hidden = false;
     startupPanel.querySelector('.spinner')?.removeAttribute('hidden');
@@ -97,12 +98,18 @@ async function load(showStartup = false) {
     (startupPanel.querySelector('p') as HTMLElement).textContent = '확인이 끝나면 바로 클립보드 동기화를 시작합니다.';
     (element('startupRetry') as HTMLButtonElement).hidden = true;
     appShell.setAttribute('aria-busy', 'true');
+    slowHint = window.setTimeout(() => {
+      if (generation !== loadGeneration || startupPanel.hidden) return;
+      (startupPanel.querySelector('p') as HTMLElement).textContent =
+        'macOS에서 보안 저장소 확인 창이 열렸다면 접근을 허용해 주세요.';
+    }, 4000);
   }
   try {
     const loaded = await invoke<PublicSettings>('load_settings');
     if (generation !== loadGeneration) return;
     settings = loaded;
   } catch (error) {
+    if (slowHint !== undefined) window.clearTimeout(slowHint);
     if (generation !== loadGeneration) return;
     startupPanel.hidden = false;
     startupPanel.querySelector('.spinner')?.setAttribute('hidden', '');
@@ -112,6 +119,7 @@ async function load(showStartup = false) {
     appShell.removeAttribute('aria-busy');
     return;
   }
+  if (slowHint !== undefined) window.clearTimeout(slowHint);
   input('enabled').checked = settings.enabled;
   input('shortcut').value = settings.shortcut;
   element('shortcutHint').textContent = settings.shortcut;

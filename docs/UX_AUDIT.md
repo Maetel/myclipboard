@@ -17,7 +17,7 @@
 
 | 우선순위 | 사용자가 겪는 문제 | 확인한 원인 | 개선 결정 | 완료 증거 |
 | --- | --- | --- | --- | --- |
-| P0 | 저장된 계정이 있어도 로그인 화면이 먼저 보이거나 시작이 늦음 | 로그인 panel이 기본 노출되고 `load_settings`가 `/me` 요청 완료까지 기다림 | 시작 panel만 먼저 보이고, 보안 저장소의 session이 있으면 즉시 계정 화면으로 전환. session 폐기는 background sync에서 처리 | 저장 session 유무별 초기 DOM·command 검증, Mac 재실행 |
+| P0 | 저장된 계정이 있어도 로그인 화면이 먼저 보이거나 시작이 늦음 | 로그인 panel이 기본 노출되고 `load_settings`의 `/me` 요청뿐 아니라 Tauri `setup`의 Keychain·단축키 복원이 main thread를 막음 | 시작 panel만 먼저 보이고, Keychain·단축키 복원과 session 확인은 worker에서 수행. 저장 session이 있으면 계정 화면으로 전환하고 session 폐기는 background sync에서 처리 | 저장 session 유무별 초기 DOM·command 검증, Mac main-thread sample·재실행 |
 | P0 | Mac에서 기록 창을 열면 앱이 멈춘 것처럼 보임 | `clipboard_history`가 암호화 파일 읽기·복호화를 main thread command에서 수행 | 기록·썸네일 command를 async + blocking worker로 이동하고 목록에 loading/오류/재시도 상태 제공 | UI heartbeat와 목록 열기 실기기 확인 |
 | P0 | 원격 파일을 더블클릭하면 최대 45초 동안 앱이 멈춤 | `clipboard_select`가 polling·download·파일 쓰기·sleep을 main thread에서 수행 | 전체 선택 작업을 blocking worker로 이동. 행 spinner·경과 시간·Escape 취소를 유지하고 중복 실행 차단 | 대기 중 검색창·Escape 반응, 지연 응답 뒤 붙여넣기 없음 |
 | P1 | 파일이 텍스트와 비슷하게 보여 무엇인지 바로 알기 어려움 | 종류는 작은 meta 문구에만 표시 | 파일 행과 최근 기록에 색상 이외의 파일 icon과 `파일` 문구를 함께 표시 | DOM·접근성 이름 확인 |

@@ -690,9 +690,12 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
-            if let Ok(settings) = read_settings(app.handle()) {
-                let _ = clipboard::apply_shortcut(app.handle(), &settings);
-            }
+            let shortcut_app = app.handle().clone();
+            std::thread::spawn(move || {
+                if let Ok(settings) = read_settings(&shortcut_app) {
+                    let _ = clipboard::apply_shortcut(&shortcut_app, &settings);
+                }
+            });
             clipboard::start_monitor(app.handle().clone());
             Ok(())
         })

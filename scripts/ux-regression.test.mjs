@@ -20,6 +20,12 @@ for (const command of ['clipboard_history', 'clipboard_thumbnail', 'clipboard_se
 assert.match(app, /spawn_blocking\(task\)/);
 assert.match(app, /Builder::default\(\)[\s\S]*?plugin\(tauri_plugin_single_instance::init/);
 assert.match(app, /tauri_plugin_single_instance::init\(\|app, _, _\|[\s\S]*show_main_window\(app\)/);
+const setupStart = app.indexOf('.setup(|app|');
+const setupEnd = app.indexOf('\n        .build(', setupStart);
+assert.ok(setupStart >= 0 && setupEnd > setupStart);
+const setup = app.slice(setupStart, setupEnd);
+assert.match(setup, /std::thread::spawn\(move \|\|[\s\S]*apply_shortcut/);
+assert.doesNotMatch(setup, /if let Ok\(settings\) = read_settings\(app\.handle\(\)\)/);
 const settingsStart = app.indexOf('fn load_settings_blocking(');
 const settingsEnd = app.indexOf('\n#[tauri::command]\nasync fn load_settings', settingsStart);
 assert.ok(settingsStart >= 0 && settingsEnd > settingsStart);
@@ -28,6 +34,7 @@ assert.doesNotMatch(app.slice(settingsStart, settingsEnd), /"\/me"|\.send\(\)/);
 assert.match(mainHtml, /id="startupPanel"/);
 assert.match(mainHtml, /id="loginPanel"[^>]*hidden/);
 assert.match(main, /startupPanel\.hidden = true/);
+assert.match(main, /보안 저장소 확인 창이 열렸다면 접근을 허용/);
 assert.match(main, /kind === 'file' \? '📄'/);
 assert.match(popup, /item\.kind === 'file' \? '📄'/);
 
