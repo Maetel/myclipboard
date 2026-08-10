@@ -9,7 +9,6 @@
         <form id="loginForm" class="form-grid">
           <label>아이디<input id="username" autocomplete="username" required></label>
           <label>비밀번호<input id="password" type="password" autocomplete="current-password" required></label>
-          <details class="advanced wide"><summary>연결 설정</summary><label>서비스 주소<input id="serverUrl" type="url" value="https://memos.my" autocomplete="url" required></label></details>
           <div class="form-actions wide"><button id="loginButton" class="primary" type="submit">로그인</button></div>
         </form>
       </section>
@@ -27,14 +26,14 @@
       <section id="securityPanel" class="panel" hidden>
         <div class="section-heading"><div><h2>비밀번호 변경</h2><p>변경하면 이 기기를 제외한 다른 기기에서 로그아웃됩니다.</p></div></div>
         <form id="passwordForm" class="form-grid">
-          <label class="wide">현재 비밀번호<input id="currentPassword" type="password" autocomplete="current-password" required minlength="12" maxlength="256"></label>
-          <label>새 비밀번호<input id="newPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
-          <label>새 비밀번호 확인<input id="newPasswordConfirm" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+          <label class="wide">현재 비밀번호<input id="currentPassword" type="password" autocomplete="current-password" required maxlength="256"></label>
+          <label>새 비밀번호<input id="newPassword" type="password" autocomplete="new-password" required minlength="8" maxlength="256"></label>
+          <label>새 비밀번호 확인<input id="newPasswordConfirm" type="password" autocomplete="new-password" required minlength="8" maxlength="256"></label>
           <div class="form-actions wide"><button id="passwordButton" class="primary" type="submit">비밀번호 변경</button></div>
         </form>
       </section>
       <section id="recentPanel" class="panel" hidden>
-        <div class="section-heading"><div><h2>최근 기록</h2><p><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd>를 누르면 어느 앱에서든 기록을 열 수 있습니다.</p></div><span id="historyCount"></span></div>
+        <div class="section-heading"><div><h2>최근 기록</h2><p><kbd id="shortcutHint">Ctrl+Shift+V</kbd>를 누르면 어느 앱에서든 기록을 열 수 있습니다.</p></div><span id="historyCount"></span></div>
         <ol id="recentItems" class="recent-list"></ol>
       </section>
       <p id="message" class="message" role="status"></p>

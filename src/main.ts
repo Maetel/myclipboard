@@ -52,9 +52,9 @@ async function refreshHistory() {
 
 async function load() {
   settings = await invoke<PublicSettings>('load_settings');
-  input('serverUrl').value = settings.server_url || 'https://memos.my';
   input('enabled').checked = settings.enabled;
   input('shortcut').value = settings.shortcut;
+  element('shortcutHint').textContent = settings.shortcut;
   loginPanel.hidden = settings.logged_in;
   accountPanel.hidden = !settings.logged_in;
   settingsPanel.hidden = !settings.logged_in;
@@ -75,7 +75,7 @@ element('loginForm').addEventListener('submit', async (event) => {
   const button = element('loginButton') as HTMLButtonElement;
   button.disabled = true; setMessage('로그인하고 있습니다.');
   try {
-    await invoke('login', { serverUrl: input('serverUrl').value.trim(), username: input('username').value.trim(), password: input('password').value });
+    await invoke('login', { serverUrl: 'https://memos.my', username: input('username').value.trim(), password: input('password').value });
     input('password').value = ''; setMessage('로그인했습니다.'); await load();
   } catch (error) { setMessage(String(error), true); }
   finally { button.disabled = false; }

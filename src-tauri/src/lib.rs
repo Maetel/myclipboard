@@ -281,11 +281,16 @@ pub(crate) fn session_token() -> Result<String, String> {
 pub(crate) fn endpoint(server_url: &str, path: &str) -> Result<reqwest::Url, String> {
     let mut url = reqwest::Url::parse(server_url)
         .map_err(|_| "서버 주소가 올바르지 않습니다.".to_string())?;
-    let safe_local =
-        cfg!(debug_assertions) && matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
-    if (url.scheme() != "https" && !(safe_local && url.scheme() == "http"))
+    let production = url.scheme() == "https"
+        && url.host_str() == Some("memos.my")
+        && url.port_or_known_default() == Some(443);
+    let safe_local = cfg!(debug_assertions)
+        && url.scheme() == "http"
+        && matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
+    if (!production && !safe_local)
         || url.username() != ""
         || url.password().is_some()
+        || url.path() != "/"
         || url.query().is_some()
         || url.fragment().is_some()
     {
@@ -301,7 +306,7 @@ pub(crate) fn http_client() -> Result<reqwest::blocking::Client, String> {
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
-        .user_agent("mymemo-clipboard/0.1");
+        .user_agent("mymemo-clipboard/0.2.2");
     #[cfg(target_os = "windows")]
     let builder = builder.pool_max_idle_per_host(0);
     builder
@@ -314,7 +319,7 @@ pub(crate) fn file_http_client() -> Result<reqwest::blocking::Client, String> {
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(90))
-        .user_agent("mymemo-clipboard/0.1");
+        .user_agent("mymemo-clipboard/0.2.2");
     #[cfg(target_os = "windows")]
     let builder = builder.pool_max_idle_per_host(0);
     builder
@@ -322,16 +327,24 @@ pub(crate) fn file_http_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|_| "파일 전송을 준비할 수 없습니다.".to_string())
 }
 
-pub(crate) fn clear_local_auth(app: &tauri::AppHandle) {
-    let _ = delete_secret(SESSION_KEY);
-    let _ = clipboard::purge_local(app);
+pub(crate) fn clear_local_auth(app: &tauri::AppHandle) -> Result<(), String> {
+    let mut cleanup_failed = false;
+    cleanup_failed |= delete_secret(SESSION_KEY).is_err();
+    cleanup_failed |= clipboard::purge_local(app).is_err();
     if let Ok(mut settings) = read_settings(app) {
         settings.username.clear();
         settings.display_name.clear();
-        let _ = write_settings(app, &settings);
+        cleanup_failed |= write_settings(app, &settings).is_err();
+    } else {
+        cleanup_failed = true;
     }
-    let _ = app.global_shortcut().unregister_all();
+    cleanup_failed |= app.global_shortcut().unregister_all().is_err();
     let _ = app.emit("auth-required", ());
+    if cleanup_failed {
+        Err("로그아웃 정보 일부를 지우지 못했습니다. 앱을 종료한 뒤 다시 실행해 주세요.".into())
+    } else {
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -343,9 +356,7 @@ fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
         .as_deref()
         == Some("admin.memos.my")
     {
-        let _ = delete_secret(SESSION_KEY);
-        let _ = clipboard::purge_local(&app);
-        let _ = app.global_shortcut().unregister_all();
+        clear_local_auth(&app)?;
         settings.server_url = DEFAULT_SERVER.into();
         settings.username.clear();
         settings.display_name.clear();
@@ -360,7 +371,7 @@ fn load_settings(app: tauri::AppHandle) -> Result<PublicSettings, String> {
             .and_then(|(client, url)| client.get(url).bearer_auth(&token).send().ok())
             .is_some_and(|response| response.status() == reqwest::StatusCode::UNAUTHORIZED);
         if unauthorized {
-            clear_local_auth(&app);
+            clear_local_auth(&app)?;
             token.clear();
             settings.username.clear();
             settings.display_name.clear();
@@ -430,10 +441,17 @@ fn login(
     Ok(())
 }
 
+fn validate_current_password(password: &str) -> Result<(), String> {
+    if password.is_empty() || password.encode_utf16().count() > 256 {
+        return Err("현재 비밀번호를 입력해 주세요.".into());
+    }
+    Ok(())
+}
+
 fn validate_new_password(password: &str) -> Result<(), String> {
     let length = password.encode_utf16().count();
-    if length < 12 || length > 256 || password.chars().any(char::is_control) {
-        return Err("비밀번호는 제어 문자를 제외하고 12자 이상 입력해 주세요.".into());
+    if length < 8 || length > 256 || password.chars().any(char::is_control) {
+        return Err("비밀번호는 제어 문자를 제외하고 8자 이상 입력해 주세요.".into());
     }
     Ok(())
 }
@@ -444,7 +462,7 @@ fn change_password(
     current_password: String,
     new_password: String,
 ) -> Result<(), String> {
-    validate_new_password(&current_password)?;
+    validate_current_password(&current_password)?;
     validate_new_password(&new_password)?;
     if current_password == new_password {
         return Err("현재 비밀번호와 다른 비밀번호를 입력해 주세요.".into());
@@ -476,7 +494,7 @@ fn change_password(
             Err("현재 비밀번호와 다른 비밀번호를 입력해 주세요.".into())
         }
         (_, Some("password_invalid")) => {
-            Err("비밀번호는 제어 문자를 제외하고 12자 이상 입력해 주세요.".into())
+            Err("비밀번호는 제어 문자를 제외하고 8자 이상 입력해 주세요.".into())
         }
         (reqwest::StatusCode::UNAUTHORIZED, _) => {
             Err("로그인이 만료되었습니다. 다시 로그인해 주세요.".into())
@@ -499,8 +517,7 @@ fn logout(app: tauri::AppHandle) -> Result<(), String> {
             }
         }
     }
-    clear_local_auth(&app);
-    Ok(())
+    clear_local_auth(&app)
 }
 
 #[tauri::command]
@@ -510,7 +527,10 @@ fn save_preferences(app: tauri::AppHandle, enabled: bool, shortcut: String) -> R
     let mut next = previous.clone();
     next.enabled = enabled;
     next.shortcut = shortcut;
-    clipboard::apply_shortcut(&app, &next)?;
+    if let Err(error) = clipboard::apply_shortcut(&app, &next) {
+        let _ = clipboard::apply_shortcut(&app, &previous);
+        return Err(error);
+    }
     if let Err(error) = write_settings(&app, &next) {
         let _ = clipboard::apply_shortcut(&app, &previous);
         return Err(error);
@@ -527,7 +547,13 @@ fn sync_now(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<
         .sync_lock
         .try_lock()
         .map_err(|_| "이미 동기화 중입니다.".to_string())?;
-    clipboard::sync_now(&app)
+    match clipboard::sync_now(&app) {
+        Err(error) if error == AUTH_REQUIRED => {
+            clear_local_auth(&app)?;
+            Err("로그인이 만료되었습니다. 다시 로그인해 주세요.".into())
+        }
+        result => result,
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -652,16 +678,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn smallmemo_endpoint_is_used_for_every_https_origin() {
+    fn release_endpoints_are_pinned_to_memos_my() {
         assert_eq!(
             endpoint("https://memos.my", "/feed").unwrap().as_str(),
             "https://memos.my/api/clipboard/v1/feed"
         );
-        assert_eq!(
-            endpoint("https://admin.memos.my", "/feed")
-                .unwrap()
-                .as_str(),
-            "https://admin.memos.my/api/clipboard/v1/feed"
-        );
+        assert!(endpoint("https://admin.memos.my", "/feed").is_err());
+        assert!(endpoint("https://attacker.example", "/login").is_err());
+        assert!(endpoint("https://memos.my.attacker.example", "/login").is_err());
+        assert!(endpoint("https://memos.my:8443", "/login").is_err());
+        assert!(endpoint("https://memos.my/path", "/login").is_err());
+        assert!(endpoint("https://user@memos.my", "/login").is_err());
+    }
+
+    #[test]
+    fn password_change_accepts_existing_eight_character_passwords() {
+        assert!(validate_current_password("12345678").is_ok());
+        assert!(validate_new_password("12345678").is_ok());
+        assert!(validate_current_password("").is_err());
+        assert!(validate_new_password("1234567").is_err());
     }
 }

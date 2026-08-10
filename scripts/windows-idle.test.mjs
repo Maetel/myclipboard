@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../src-tauri/src/clipboard.rs', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+const popupSource = readFileSync(new URL('../src/popup.ts', import.meta.url), 'utf8');
+const popupHtml = readFileSync(new URL('../popup.html', import.meta.url), 'utf8');
+const mainHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const windowsConfig = JSON.parse(
   readFileSync(new URL('../src-tauri/tauri.windows.conf.json', import.meta.url), 'utf8'),
 );
@@ -17,6 +20,9 @@ assert.ok(windowsMonitorStart >= 0 && nonWindowsMonitorStart > windowsMonitorSta
 const windowsMonitor = source.slice(windowsMonitorStart, nonWindowsMonitorStart);
 assert.match(source, /AddClipboardFormatListener/);
 assert.match(source, /WM_CLIPBOARDUPDATE/);
+assert.match(source, /ExcludeClipboardContentFromMonitorProcessing/);
+assert.match(source, /CanIncludeInClipboardHistory/);
+assert.match(source, /CanUploadToCloudClipboard/);
 assert.match(windowsMonitor, /wake\.wait\(state\)/);
 assert.doesNotMatch(windowsMonitor, /from_millis\(500\)/);
 assert.doesNotMatch(windowsMonitor, /from_secs\(3\)/);
@@ -46,9 +52,21 @@ assert.deepEqual(windowsConfig.bundle.targets, ['nsis']);
 assert.match(appSource, /WebviewWindowBuilder::new\([\s\S]*"main"/);
 assert.match(source, /WebviewWindowBuilder::new\([\s\S]*"clipboard-popup"/);
 assert.match(appSource, /MAIN_WINDOW_CREATING\.swap/);
+assert.match(appSource, /url\.host_str\(\) == Some\("memos\.my"\)/);
+assert.doesNotMatch(mainHtml, /id="serverUrl"/);
 assert.match(appSource, /ExitRequested[\s\S]*code: None[\s\S]*prevent_exit/);
 assert.equal(appSource.match(/pool_max_idle_per_host\(0\)/g)?.length, 2);
 assert.match(source, /POPUP_CREATING\.swap/);
+assert.match(source, /struct SelectionState/);
+assert.match(source, /이미 항목을 붙여넣는 중입니다/);
+assert.match(source, /selection\.ensure_not_cancelled\(\)\?/);
+assert.match(source, /selection_state\(\)\.close_popup\(\)/);
+assert.ok(source.match(/StatusCode::UNAUTHORIZED[\s\S]{0,180}clear_local_auth/g)?.length >= 4);
+assert.match(popupSource, /if \(selecting\) return/);
+assert.match(popupSource, /Esc를 누르면 취소합니다/);
+assert.match(popupSource, /aria-activedescendant/);
+assert.doesNotMatch(popupSource, /origin_device_id\.slice/);
+assert.match(popupHtml, /aria-activedescendant|aria-controls="clipboardItems"/);
 assert.match(appSource, /#\[cfg\(target_os = "windows"\)\][\s\S]*window\.destroy\(\)/);
 assert.match(source, /#\[cfg\(target_os = "windows"\)\][\s\S]*window\.destroy\(\)/);
 

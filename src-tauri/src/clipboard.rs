@@ -153,6 +153,7 @@ static FOREGROUND: OnceLock<Mutex<ForegroundTarget>> = OnceLock::new();
 static LAST_APPLIED_HASH: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
 static SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static POPUP_ARMED: AtomicBool = AtomicBool::new(false);
+static SELECTION_STATE: OnceLock<SelectionState> = OnceLock::new();
 #[cfg(target_os = "windows")]
 static WINDOWS_STATE_CACHE: OnceLock<Mutex<Option<LocalState>>> = OnceLock::new();
 #[cfg(target_os = "windows")]
@@ -163,6 +164,91 @@ static MONITOR_WAKE: OnceLock<(Mutex<MonitorWake>, Condvar)> = OnceLock::new();
 struct MonitorWake {
     capture: bool,
     sync: bool,
+}
+
+#[derive(Default)]
+struct SelectionState {
+    inner: Mutex<SelectionStatus>,
+}
+
+#[derive(Default)]
+struct SelectionStatus {
+    popup_open: bool,
+    active: bool,
+    cancelled: bool,
+    generation: u64,
+}
+
+struct SelectionGuard<'a> {
+    state: &'a SelectionState,
+    generation: u64,
+}
+
+impl SelectionState {
+    fn open_popup(&self) {
+        if let Ok(mut status) = self.inner.lock() {
+            status.popup_open = true;
+        }
+    }
+
+    fn close_popup(&self) {
+        if let Ok(mut status) = self.inner.lock() {
+            status.popup_open = false;
+            if status.active {
+                status.cancelled = true;
+            }
+        }
+    }
+
+    fn begin(&self) -> Result<SelectionGuard<'_>, String> {
+        let mut status = self
+            .inner
+            .lock()
+            .map_err(|_| "붙여넣기 상태를 확인할 수 없습니다.".to_string())?;
+        if !status.popup_open {
+            return Err("클립보드 기록을 다시 열고 선택해 주세요.".into());
+        }
+        if status.active {
+            return Err("이미 항목을 붙여넣는 중입니다.".into());
+        }
+        status.active = true;
+        status.cancelled = false;
+        status.generation = status.generation.wrapping_add(1);
+        Ok(SelectionGuard {
+            state: self,
+            generation: status.generation,
+        })
+    }
+}
+
+impl SelectionGuard<'_> {
+    fn ensure_not_cancelled(&self) -> Result<(), String> {
+        let status = self
+            .state
+            .inner
+            .lock()
+            .map_err(|_| "붙여넣기 상태를 확인할 수 없습니다.".to_string())?;
+        if status.generation != self.generation || status.cancelled || !status.popup_open {
+            Err("파일 받기를 취소했습니다.".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for SelectionGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut status) = self.state.inner.lock() {
+            if status.generation == self.generation {
+                status.active = false;
+                status.cancelled = false;
+            }
+        }
+    }
+}
+
+fn selection_state() -> &'static SelectionState {
+    SELECTION_STATE.get_or_init(SelectionState::default)
 }
 
 fn foreground() -> &'static Mutex<ForegroundTarget> {
@@ -327,12 +413,13 @@ pub fn purge_local(app: &tauri::AppHandle) -> Result<(), String> {
             *cache = None;
         }
     }
-    match fs::remove_dir_all(root(app)?) {
+    let key_result = super::delete_secret(super::HISTORY_KEY);
+    let directory_result = match fs::remove_dir_all(root(app)?) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.to_string()),
-    }
-    super::delete_secret(super::HISTORY_KEY)
+        Err(error) => return key_result.and(Err(error.to_string())),
+    };
+    key_result.and(Ok(directory_result))
 }
 
 fn random_event_id() -> Result<String, String> {
@@ -761,6 +848,73 @@ fn should_capture(hash: &str, last_hash: &mut String) -> bool {
         .is_some_and(|(applied, at)| applied == hash && at.elapsed() < Duration::from_secs(3))
 }
 
+#[cfg(target_os = "windows")]
+fn privacy_markers_allow_capture(
+    exclude_present: bool,
+    history_present: bool,
+    history_value: Option<u32>,
+    cloud_present: bool,
+    cloud_value: Option<u32>,
+) -> bool {
+    !exclude_present
+        && (!history_present || history_value == Some(1))
+        && (!cloud_present || cloud_value == Some(1))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_clipboard_capture_allowed() -> Result<bool, String> {
+    use windows_sys::Win32::System::{
+        DataExchange::{
+            CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+            RegisterClipboardFormatW,
+        },
+        Memory::{GlobalLock, GlobalSize, GlobalUnlock},
+    };
+
+    let register = |name: &str| {
+        let wide = name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        unsafe { RegisterClipboardFormatW(wide.as_ptr()) }
+    };
+    let exclude = register("ExcludeClipboardContentFromMonitorProcessing");
+    let history = register("CanIncludeInClipboardHistory");
+    let cloud = register("CanUploadToCloudClipboard");
+    if exclude == 0 || history == 0 || cloud == 0 {
+        return Err("Windows 클립보드의 개인정보 보호 표시를 확인할 수 없습니다.".into());
+    }
+
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Ok(false);
+        }
+        let present = |format| IsClipboardFormatAvailable(format) != 0;
+        let read_dword = |format| {
+            let handle = GetClipboardData(format);
+            if handle.is_null() || GlobalSize(handle) < std::mem::size_of::<u32>() {
+                return None;
+            }
+            let pointer = GlobalLock(handle) as *const u32;
+            if pointer.is_null() {
+                return None;
+            }
+            let value = std::ptr::read_unaligned(pointer);
+            GlobalUnlock(handle);
+            Some(value)
+        };
+        let exclude_present = present(exclude);
+        let history_present = present(history);
+        let cloud_present = present(cloud);
+        let allowed = privacy_markers_allow_capture(
+            exclude_present,
+            history_present,
+            history_present.then(|| read_dword(history)).flatten(),
+            cloud_present,
+            cloud_present.then(|| read_dword(cloud)).flatten(),
+        );
+        CloseClipboard();
+        Ok(allowed)
+    }
+}
+
 fn store_capture(
     app: &tauri::AppHandle,
     client: &reqwest::blocking::Client,
@@ -778,6 +932,10 @@ fn store_capture(
                 state.sources.push(source);
             }
             state.items.insert(0, value)
+        }
+        Err(error) if error == super::AUTH_REQUIRED => {
+            super::clear_local_auth(app)?;
+            return Err("로그인이 만료되었습니다. 다시 로그인해 주세요.".into());
         }
         Err(error) => {
             state.items.insert(
@@ -817,6 +975,10 @@ fn capture_local(
     token: &str,
     last_hash: &mut String,
 ) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if !windows_clipboard_capture_allowed()? {
+        return Ok(());
+    }
     if let Some(path) = read_file_clipboard()? {
         let (filename, mime, size, digest, thumbnail, source_identity) = file_details(&path)?;
         let hash = format!("file:{digest}");
@@ -1050,7 +1212,9 @@ pub fn start_monitor(app: tauri::AppHandle) {
                     .ok()
                     .map(|_guard| sync_once(&app, &client, &settings, &token));
                 if matches!(&result, Some(Err(error)) if error == super::AUTH_REQUIRED) {
-                    super::clear_local_auth(&app);
+                    if let Err(error) = super::clear_local_auth(&app) {
+                        let _ = app.emit("sync-status", error);
+                    }
                     file_source_active = false;
                 }
             } else if timed_out && file_source_active {
@@ -1092,7 +1256,9 @@ pub fn start_monitor(app: tauri::AppHandle) {
                         .ok()
                         .map(|_guard| sync_once(&app, &client, &settings, &token));
                     if matches!(&result, Some(Err(error)) if error == super::AUTH_REQUIRED) {
-                        super::clear_local_auth(&app);
+                        if let Err(error) = super::clear_local_auth(&app) {
+                            let _ = app.emit("sync-status", error);
+                        }
                     }
                     server_ready = matches!(result, Some(Ok(())));
                     let _ = app.emit(
@@ -1125,6 +1291,7 @@ pub fn start_monitor(app: tauri::AppHandle) {
 }
 
 fn hide_popup(app: &tauri::AppHandle) {
+    selection_state().close_popup();
     POPUP_ARMED.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("clipboard-popup") {
         #[cfg(target_os = "windows")]
@@ -1158,6 +1325,7 @@ pub fn show_popup(app: &tauri::AppHandle) {
         if window.set_focus().is_ok() {
             POPUP_ARMED.store(true, Ordering::SeqCst);
         }
+        selection_state().open_popup();
         let _ = window.emit("clipboard-open", ());
         return;
     }
@@ -1188,6 +1356,7 @@ pub fn show_popup(app: &tauri::AppHandle) {
                 if window.set_focus().is_ok() {
                     POPUP_ARMED.store(true, Ordering::SeqCst);
                 }
+                selection_state().open_popup();
                 let _ = window.emit("clipboard-open", ());
             }
         });
@@ -1239,6 +1408,10 @@ pub fn clipboard_thumbnail(app: tauri::AppHandle, id: String) -> Result<Option<S
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        super::clear_local_auth(&app)?;
+        return Err("로그인이 만료되었습니다. 다시 로그인해 주세요.".into());
+    }
     if !response.status().is_success() {
         return Err("썸네일을 불러오지 못했습니다.".into());
     }
@@ -1258,7 +1431,12 @@ pub fn clipboard_thumbnail(app: tauri::AppHandle, id: String) -> Result<Option<S
     Ok(Some(format!("data:{mime};base64,{}", BASE64.encode(bytes))))
 }
 
-fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>, String> {
+fn request_file(
+    app: &tauri::AppHandle,
+    item: &ClipboardItem,
+    selection: &SelectionGuard<'_>,
+) -> Result<Vec<u8>, String> {
+    selection.ensure_not_cancelled()?;
     let settings = super::read_settings(app)?;
     let token = super::session_token()?;
     let client = super::file_http_client()?;
@@ -1270,6 +1448,10 @@ fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>,
         .bearer_auth(&token)
         .send()
         .map_err(|error| error.without_url().to_string())?;
+    if created.status() == reqwest::StatusCode::UNAUTHORIZED {
+        super::clear_local_auth(app)?;
+        return Err("로그인이 만료되었습니다. 다시 로그인해 주세요.".into());
+    }
     if !created.status().is_success() {
         return Err(format!(
             "파일을 요청하지 못했습니다. ({})",
@@ -1282,12 +1464,14 @@ fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>,
     let started = Instant::now();
     let mut status = created.status;
     let expected_sha256 = loop {
+        selection.ensure_not_cancelled()?;
         if status == "pending" {
             if started.elapsed() >= Duration::from_secs(FILE_WAIT_SECONDS) {
                 break None;
             }
             thread::sleep(Duration::from_secs(1));
         }
+        selection.ensure_not_cancelled()?;
         let response = client
             .get(super::endpoint(
                 &settings.server_url,
@@ -1296,6 +1480,10 @@ fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>,
             .bearer_auth(&token)
             .send()
             .map_err(|error| error.without_url().to_string())?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            super::clear_local_auth(app)?;
+            return Err("로그인이 만료되었습니다. 다시 로그인해 주세요.".into());
+        }
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err("파일 요청 시간이 지났습니다.".into());
         }
@@ -1321,6 +1509,7 @@ fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>,
     let expected_sha256 = expected_sha256
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .ok_or_else(|| "파일 전송 상태가 올바르지 않습니다.".to_string())?;
+    selection.ensure_not_cancelled()?;
     let response = client
         .get(super::endpoint(
             &settings.server_url,
@@ -1329,6 +1518,10 @@ fn request_file(app: &tauri::AppHandle, item: &ClipboardItem) -> Result<Vec<u8>,
         .bearer_auth(&token)
         .send()
         .map_err(|error| error.without_url().to_string())?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        super::clear_local_auth(app)?;
+        return Err("로그인이 만료되었습니다. 다시 로그인해 주세요.".into());
+    }
     if !response.status().is_success() {
         return Err("파일을 내려받지 못했습니다.".into());
     }
@@ -1377,6 +1570,7 @@ fn write_image_clipboard(bytes: &[u8]) -> Result<String, String> {
 
 #[tauri::command]
 pub fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let selection = selection_state().begin()?;
     let state = load_state(&app)?;
     let item = state
         .items
@@ -1396,18 +1590,21 @@ pub fn clipboard_select(app: tauri::AppHandle, id: String) -> Result<(), String>
             if item.origin_device_id == settings.device_id {
                 return Err("원본 파일을 찾을 수 없습니다. 파일을 다시 복사해 주세요.".into());
             }
-            request_file(&app, &item)?
+            request_file(&app, &item, &selection)?
         };
+        selection.ensure_not_cancelled()?;
         if item.kind == "image" {
             write_image_clipboard(&bytes)?
         } else {
             let filename = item.filename.as_deref().unwrap_or(&item.text);
             let path = downloads_dir(&app)?.join(format!("{}-{filename}", item.id));
             super::atomic_write(&path, &bytes)?;
+            selection.ensure_not_cancelled()?;
             write_file_clipboard(&path)?;
             format!("file:{}", hex(&Sha256::digest(&bytes)))
         }
     } else {
+        selection.ensure_not_cancelled()?;
         write_clipboard(&item.text)?;
         format!("text:{}", hex(&Sha256::digest(item.text.as_bytes())))
     };
@@ -1782,5 +1979,87 @@ mod tests {
         )
         .expect("server pending response should deserialize");
         assert_eq!(pending.requests[0].request_id, "request-1");
+    }
+
+    #[test]
+    fn selection_is_single_flight_and_popup_close_cancels_it() {
+        let state = SelectionState::default();
+        assert!(state.begin().is_err());
+
+        state.open_popup();
+        let selection = state.begin().expect("first selection should start");
+        assert!(state.begin().is_err());
+        assert!(selection.ensure_not_cancelled().is_ok());
+
+        state.close_popup();
+        assert_eq!(
+            selection.ensure_not_cancelled().unwrap_err(),
+            "파일 받기를 취소했습니다."
+        );
+        drop(selection);
+
+        state.open_popup();
+        assert!(state.begin().is_ok());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_privacy_markers_fail_closed() {
+        assert!(privacy_markers_allow_capture(
+            false, false, None, false, None
+        ));
+        assert!(!privacy_markers_allow_capture(
+            true, false, None, false, None
+        ));
+        assert!(!privacy_markers_allow_capture(
+            false,
+            true,
+            Some(0),
+            false,
+            None
+        ));
+        assert!(!privacy_markers_allow_capture(
+            false, true, None, false, None
+        ));
+        assert!(!privacy_markers_allow_capture(
+            false,
+            false,
+            None,
+            true,
+            Some(0)
+        ));
+        assert!(privacy_markers_allow_capture(
+            false,
+            true,
+            Some(1),
+            true,
+            Some(1)
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn delayed_file_transfer_rejects_a_changed_source() {
+        let path = std::env::temp_dir().join(format!(
+            "mymemo-changed-source-{}.txt",
+            random_event_id().expect("temporary id")
+        ));
+        fs::write(&path, b"before").expect("write original source");
+        let metadata = fs::metadata(&path).expect("read original metadata");
+        let identity = windows_source_identity(&path, &metadata);
+        let source = LocalSource {
+            item_id: "item-1".into(),
+            path: path.clone(),
+            size_bytes: metadata.len(),
+            sha256: format!("pinned:{}", hex(&Sha256::digest(identity.as_bytes()))),
+            source_identity: Some(identity),
+            managed: false,
+        };
+
+        thread::sleep(Duration::from_millis(20));
+        fs::write(&path, b"after!").expect("replace source bytes");
+        let error = source_bytes(&source, source.size_bytes).expect_err("changed file must fail");
+        assert!(error.contains("변경"));
+        let _ = fs::remove_file(path);
     }
 }
