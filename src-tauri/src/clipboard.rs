@@ -33,7 +33,7 @@ use super::Settings;
 
 #[cfg(test)]
 const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+V";
-const MAX_ITEMS: usize = 500;
+const SYNC_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: usize = 50_000_000;
@@ -424,6 +424,18 @@ pub fn purge_local(app: &tauri::AppHandle) -> Result<(), String> {
     key_result.and(Ok(directory_result))
 }
 
+pub fn trim_history(app: &tauri::AppHandle, limit: usize) -> Result<(), String> {
+    let mut state = load_state(app)?;
+    if state.items.len() <= limit {
+        return Ok(());
+    }
+    state.items.truncate(limit);
+    clean_local_sources(&mut state);
+    save_state(app, &state)?;
+    let _ = app.emit("clipboard-updated", ());
+    Ok(())
+}
+
 fn random_event_id() -> Result<String, String> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| "이벤트 ID를 만들 수 없습니다.".to_string())?;
@@ -687,7 +699,7 @@ fn sync_once(
             break;
         }
     }
-    state.items.truncate(MAX_ITEMS);
+    state.items.truncate(settings.history_limit);
     clean_local_sources(&mut state);
     let file_request_error = fulfill_file_requests(client, settings, token, &state).err();
     if state != previous_state {
@@ -963,7 +975,7 @@ fn store_capture(
             let _ = app.emit("sync-status", error);
         }
     }
-    state.items.truncate(MAX_ITEMS);
+    state.items.truncate(settings.history_limit);
     clean_local_sources(&mut state);
     save_state(app, &state)?;
     let _ = app.emit("clipboard-updated", ());
@@ -1155,34 +1167,23 @@ pub fn start_monitor(app: tauri::AppHandle) {
             return;
         };
         let mut last_hash = String::new();
-        let mut file_source_active = false;
         loop {
             let (state, wake) =
                 MONITOR_WAKE.get_or_init(|| (Mutex::new(MonitorWake::default()), Condvar::new()));
             let Ok(mut state) = state.lock() else {
                 return;
             };
-            let mut timed_out = false;
             while !state.capture && !state.sync {
-                if file_source_active {
-                    let Ok((next, timeout)) = wake.wait_timeout(state, Duration::from_secs(20))
-                    else {
-                        return;
-                    };
-                    state = next;
-                    if timeout.timed_out() {
-                        timed_out = true;
-                        break;
-                    }
-                } else {
-                    let Ok(next) = wake.wait(state) else {
-                        return;
-                    };
-                    state = next;
+                let Ok((next, timeout)) = wake.wait_timeout(state, SYNC_INTERVAL) else {
+                    return;
+                };
+                state = next;
+                if timeout.timed_out() {
+                    break;
                 }
             }
             let capture = state.capture;
-            let sync = state.sync;
+            let sync = state.sync || (!state.capture && !state.sync);
             state.capture = false;
             state.sync = false;
             drop(state);
@@ -1192,19 +1193,12 @@ pub fn start_monitor(app: tauri::AppHandle) {
             };
             let token = super::session_token().unwrap_or_default();
             if !settings.enabled || token.is_empty() {
-                file_source_active = false;
                 continue;
             }
             if capture {
                 let result = capture_local(&app, &client, &settings, &token, &mut last_hash);
                 if let Err(error) = result {
                     let _ = app.emit("sync-status", error);
-                } else {
-                    file_source_active = load_state(&app)
-                        .unwrap_or_default()
-                        .sources
-                        .iter()
-                        .any(|source| source.sha256.starts_with("pinned:"));
                 }
             }
             if sync {
@@ -1217,12 +1211,6 @@ pub fn start_monitor(app: tauri::AppHandle) {
                     if let Err(error) = super::clear_local_auth(&app) {
                         let _ = app.emit("sync-status", error);
                     }
-                    file_source_active = false;
-                }
-            } else if timed_out && file_source_active {
-                let state = load_state(&app).unwrap_or_default();
-                if let Err(error) = fulfill_file_requests(&client, &settings, &token, &state) {
-                    let _ = app.emit("sync-status", error);
                 }
             }
         }
@@ -1251,7 +1239,7 @@ pub fn start_monitor(app: tauri::AppHandle) {
             };
             let token = super::session_token().unwrap_or_default();
             if settings.enabled && !token.is_empty() {
-                if last_sync.elapsed() >= Duration::from_secs(3) {
+                if last_sync.elapsed() >= SYNC_INTERVAL {
                     let result = SYNC_LOCK
                         .get_or_init(|| Mutex::new(()))
                         .try_lock()

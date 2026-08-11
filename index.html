@@ -24,6 +24,7 @@
         <form id="settingsForm" class="form-grid">
           <label class="toggle wide"><input id="enabled" type="checkbox" checked><span><strong>클립보드 동기화</strong><small>끄면 이 기기의 로컬 기록과 암호화 키를 삭제합니다.</small></span></label>
           <label class="wide">기록 열기 단축키<div class="shortcut-row"><input id="shortcut" value="Ctrl+Shift+V" required><button id="resetShortcut" type="button" class="quiet">기본값</button></div></label>
+          <label>최근 기록 개수<input id="historyLimit" type="number" min="1" max="500" step="1" value="200" inputmode="numeric" required></label>
           <div class="form-actions wide"><button id="settingsButton" class="primary" type="submit">설정 저장</button><button id="syncNow" type="button" class="quiet">지금 동기화</button></div>
         </form>
       </section>

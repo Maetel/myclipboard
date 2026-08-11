@@ -46,4 +46,4 @@ if command -v lsof >/dev/null 2>&1; then
   fi
 fi
 
-exec npm run desktop:dev
+exec npm run dev:self-update

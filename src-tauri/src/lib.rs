@@ -20,6 +20,8 @@ use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 const DEFAULT_SERVER: &str = "https://memos.my";
+const DEFAULT_HISTORY_LIMIT: usize = 200;
+const MAX_HISTORY_LIMIT: usize = 500;
 #[cfg(target_os = "macos")]
 const DEFAULT_SHORTCUT: &str = "Command+Shift+V";
 #[cfg(not(target_os = "macos"))]
@@ -44,6 +46,7 @@ pub struct Settings {
     pub device_name: String,
     pub enabled: bool,
     pub shortcut: String,
+    pub history_limit: usize,
 }
 
 impl Default for Settings {
@@ -56,6 +59,7 @@ impl Default for Settings {
             device_name: default_device_name(),
             enabled: true,
             shortcut: DEFAULT_SHORTCUT.into(),
+            history_limit: DEFAULT_HISTORY_LIMIT,
         }
     }
 }
@@ -69,6 +73,7 @@ struct PublicSettings {
     logged_in: bool,
     enabled: bool,
     shortcut: String,
+    history_limit: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,9 +157,7 @@ fn secret_filename(account: &str) -> Result<&'static str, String> {
 
 fn valid_secret_value(account: &str, value: &str) -> bool {
     match account {
-        SESSION_KEY => {
-            value.len() == 47 && value.starts_with("smc_")
-        }
+        SESSION_KEY => value.len() == 47 && value.starts_with("smc_"),
         HISTORY_KEY => value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
         _ => false,
     }
@@ -561,6 +564,7 @@ fn load_settings_blocking(app: tauri::AppHandle) -> Result<PublicSettings, Strin
         logged_in: !token.is_empty(),
         enabled: settings.enabled,
         shortcut: settings.shortcut,
+        history_limit: settings.history_limit,
     })
 }
 
@@ -722,12 +726,17 @@ fn save_preferences_blocking(
     app: tauri::AppHandle,
     enabled: bool,
     shortcut: String,
+    history_limit: usize,
 ) -> Result<(), String> {
     clipboard::validate_shortcut(&shortcut)?;
+    if !(1..=MAX_HISTORY_LIMIT).contains(&history_limit) {
+        return Err("최근 기록 개수는 1개에서 500개 사이로 입력해 주세요.".into());
+    }
     let previous = read_settings(&app)?;
     let mut next = previous.clone();
     next.enabled = enabled;
     next.shortcut = shortcut;
+    next.history_limit = history_limit;
     if let Err(error) = clipboard::apply_shortcut(&app, &next) {
         let _ = clipboard::apply_shortcut(&app, &previous);
         return Err(error);
@@ -738,6 +747,8 @@ fn save_preferences_blocking(
     }
     if previous.enabled && !enabled {
         clipboard::purge_local(&app)?;
+    } else {
+        clipboard::trim_history(&app, history_limit)?;
     }
     Ok(())
 }
@@ -747,8 +758,9 @@ async fn save_preferences(
     app: tauri::AppHandle,
     enabled: bool,
     shortcut: String,
+    history_limit: usize,
 ) -> Result<(), String> {
-    run_blocking(move || save_preferences_blocking(app, enabled, shortcut)).await
+    run_blocking(move || save_preferences_blocking(app, enabled, shortcut, history_limit)).await
 }
 
 fn sync_now_blocking(app: tauri::AppHandle) -> Result<(), String> {
@@ -918,10 +930,21 @@ mod tests {
             SESSION_KEY,
             &format!("smc_{}", "A".repeat(43))
         ));
-        assert!(!valid_secret_value(SESSION_KEY, &format!("legacy_{}", "z".repeat(40))));
+        assert!(!valid_secret_value(
+            SESSION_KEY,
+            &format!("legacy_{}", "z".repeat(40))
+        ));
         assert!(valid_secret_value(HISTORY_KEY, &"a1".repeat(32)));
         assert!(!valid_secret_value(SESSION_KEY, "smc_short"));
         assert!(!valid_secret_value(HISTORY_KEY, &"g0".repeat(32)));
         assert!(!valid_secret_value("unknown", &"a".repeat(64)));
+    }
+
+    #[test]
+    fn history_limit_defaults_to_two_hundred() {
+        let settings = Settings::default();
+        assert_eq!(settings.history_limit, 200);
+        let restored: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(restored.history_limit, 200);
     }
 }

@@ -34,6 +34,11 @@ assert.doesNotMatch(app.slice(settingsStart, settingsEnd), /"\/me"|\.send\(\)/);
 
 assert.match(mainHtml, /id="startupPanel"/);
 assert.match(mainHtml, /id="loginPanel"[^>]*hidden/);
+assert.match(mainHtml, /id="historyLimit"[^>]*min="1"[^>]*max="500"[^>]*value="200"/);
+assert.match(main, /history_limit: number/);
+assert.match(main, /historyLimit: input\('historyLimit'\)\.valueAsNumber/);
+assert.match(app, /DEFAULT_HISTORY_LIMIT: usize = 200/);
+assert.match(clipboard, /state\.items\.truncate\(settings\.history_limit\)/);
 assert.match(main, /startupPanel\.hidden = true/);
 assert.doesNotMatch(main, /보안 저장소 확인 창|Keychain|키체인/);
 assert.match(app, /MACOS_SECRET_ROOT/);

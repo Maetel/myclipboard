@@ -4,7 +4,7 @@ import './style.css';
 
 interface PublicSettings {
   server_url: string; username: string; display_name: string; logged_in: boolean;
-  enabled: boolean; shortcut: string; device_name: string;
+  enabled: boolean; shortcut: string; device_name: string; history_limit: number;
 }
 interface ClipboardItem { id: string; kind: 'text'|'url'|'file'|'image'; text: string; filename?: string; created_at: string; size_bytes?: number }
 
@@ -121,6 +121,7 @@ async function load(showStartup = false) {
   if (slowHint !== undefined) window.clearTimeout(slowHint);
   input('enabled').checked = settings.enabled;
   input('shortcut').value = settings.shortcut;
+  input('historyLimit').value = String(settings.history_limit);
   element('shortcutHint').textContent = settings.shortcut;
   loginPanel.hidden = settings.logged_in;
   accountPanel.hidden = !settings.logged_in;
@@ -152,7 +153,11 @@ element('settingsForm').addEventListener('submit', async (event) => {
   const button = element('settingsButton') as HTMLButtonElement;
   button.disabled = true; setMessage('설정을 저장하고 있습니다.');
   try {
-    await invoke('save_preferences', { enabled: input('enabled').checked, shortcut: input('shortcut').value.trim() });
+    await invoke('save_preferences', {
+      enabled: input('enabled').checked,
+      shortcut: input('shortcut').value.trim(),
+      historyLimit: input('historyLimit').valueAsNumber,
+    });
     setMessage('설정을 저장했습니다.'); await load();
   } catch (error) { setMessage(String(error), true); }
   finally { button.disabled = false; }

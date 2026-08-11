@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const source = readFileSync(new URL('../src-tauri/src/clipboard.rs', import.meta.url), 'utf8');
-const appSource = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
-const popupSource = readFileSync(new URL('../src/popup.ts', import.meta.url), 'utf8');
-const popupHtml = readFileSync(new URL('../popup.html', import.meta.url), 'utf8');
-const mainHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+const readSource = (path) => readFileSync(new URL(path, import.meta.url), 'utf8').replaceAll('\r\n', '\n');
+const source = readSource('../src-tauri/src/clipboard.rs');
+const appSource = readSource('../src-tauri/src/lib.rs');
+const popupSource = readSource('../src/popup.ts');
+const popupHtml = readSource('../popup.html');
+const mainHtml = readSource('../index.html');
 const windowsConfig = JSON.parse(
   readFileSync(new URL('../src-tauri/tauri.windows.conf.json', import.meta.url), 'utf8'),
 );
@@ -23,7 +24,8 @@ assert.match(source, /WM_CLIPBOARDUPDATE/);
 assert.match(source, /ExcludeClipboardContentFromMonitorProcessing/);
 assert.match(source, /CanIncludeInClipboardHistory/);
 assert.match(source, /CanUploadToCloudClipboard/);
-assert.match(windowsMonitor, /wake\.wait\(state\)/);
+assert.match(source, /const SYNC_INTERVAL: Duration = Duration::from_secs\(2\)/);
+assert.match(windowsMonitor, /wake\.wait_timeout\(state, SYNC_INTERVAL\)/);
 assert.doesNotMatch(windowsMonitor, /from_millis\(500\)/);
 assert.doesNotMatch(windowsMonitor, /from_secs\(3\)/);
 assert.doesNotMatch(windowsMonitor, /GetClipboardSequenceNumber/);
