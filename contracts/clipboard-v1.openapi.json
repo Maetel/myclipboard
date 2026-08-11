@@ -1,0 +1,148 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "MyMemo Clipboard API",
+    "version": "1.0.0",
+    "description": "The complete HTTP and data boundary between the SmallMemo service and independently built MyMemo Clipboard clients. This contract contains no shared implementation."
+  },
+  "servers": [{ "url": "https://memos.my/api/clipboard/v1" }],
+  "security": [{ "clipboardSession": [] }],
+  "paths": {
+    "/login": {
+      "post": {
+        "security": [],
+        "operationId": "login",
+        "requestBody": { "$ref": "#/components/requestBodies/Login" },
+        "responses": {
+          "200": { "description": "Session created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/logout": {
+      "post": {
+        "operationId": "logout",
+        "responses": { "200": { "description": "Session revoked", "content": { "application/json": { "schema": { "type": "object", "required": ["logged_out"], "properties": { "logged_out": { "const": true } }, "additionalProperties": false } } } }, "401": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/password": {
+      "post": {
+        "operationId": "changePassword",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PasswordChange" } } } },
+        "responses": { "200": { "description": "Password changed", "content": { "application/json": { "schema": { "type": "object", "required": ["changed"], "properties": { "changed": { "const": true } }, "additionalProperties": false } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/me": {
+      "get": {
+        "operationId": "me",
+        "responses": { "200": { "description": "Current account and device", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Me" } } } }, "401": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/spaces": {
+      "get": {
+        "operationId": "listSpaces",
+        "responses": { "200": { "description": "Available clipboard spaces", "content": { "application/json": { "schema": { "type": "object", "required": ["spaces"], "properties": { "spaces": { "type": "array", "items": { "$ref": "#/components/schemas/Space" } } }, "additionalProperties": false } } } }, "401": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/items": {
+      "post": {
+        "operationId": "publishItem",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PublishItem" } } } },
+        "responses": { "201": { "description": "Published or idempotently replayed item", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClipboardItem" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }, "413": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/feed": {
+      "get": {
+        "operationId": "readFeed",
+        "parameters": [
+          { "name": "after", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 100 } }
+        ],
+        "responses": { "200": { "description": "Ordered item events", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Feed" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/items/{itemId}": {
+      "delete": {
+        "operationId": "deleteItem",
+        "parameters": [{ "$ref": "#/components/parameters/ItemId" }],
+        "responses": { "200": { "description": "Deletion event", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeleteResult" } } } }, "401": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/items/{itemId}/thumbnail": {
+      "get": {
+        "operationId": "getThumbnail",
+        "parameters": [{ "$ref": "#/components/parameters/ItemId" }],
+        "responses": { "200": { "description": "JPEG or PNG bytes", "headers": { "Cache-Control": { "schema": { "const": "private, no-store" } } }, "content": { "image/jpeg": { "schema": { "type": "string", "contentEncoding": "binary" } }, "image/png": { "schema": { "type": "string", "contentEncoding": "binary" } } } }, "401": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/items/{itemId}/file-requests": {
+      "post": {
+        "operationId": "createFileRequest",
+        "parameters": [{ "$ref": "#/components/parameters/ItemId" }],
+        "responses": { "201": { "description": "Pending transfer request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FileRequest" } } } }, "401": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/file-requests/pending": {
+      "get": {
+        "operationId": "listPendingFileRequests",
+        "responses": { "200": { "description": "Requests for which this device owns the source file", "content": { "application/json": { "schema": { "type": "object", "required": ["requests"], "properties": { "requests": { "type": "array", "items": { "$ref": "#/components/schemas/PendingFileRequest" } } }, "additionalProperties": false } } } }, "401": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/file-requests/{requestId}": {
+      "get": {
+        "operationId": "getFileRequest",
+        "parameters": [{ "$ref": "#/components/parameters/RequestId" }],
+        "responses": { "200": { "description": "Transfer status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FileRequest" } } } }, "401": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/file-requests/{requestId}/content": {
+      "put": {
+        "operationId": "uploadFileContent",
+        "parameters": [{ "$ref": "#/components/parameters/RequestId" }],
+        "requestBody": { "required": true, "content": { "application/octet-stream": { "schema": { "type": "string", "contentEncoding": "binary", "maxLength": 10485760 } } } },
+        "responses": { "200": { "description": "Content ready", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FileReady" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "413": { "$ref": "#/components/responses/Error" } }
+      },
+      "get": {
+        "operationId": "downloadFileContent",
+        "parameters": [{ "$ref": "#/components/parameters/RequestId" }],
+        "responses": { "200": { "description": "Verified source bytes; consuming this response completes the transfer", "headers": { "X-Content-SHA256": { "schema": { "$ref": "#/components/schemas/Sha256" } }, "Content-Disposition": { "schema": { "type": "string" } }, "Cache-Control": { "schema": { "const": "private, no-store" } } }, "content": { "application/octet-stream": { "schema": { "type": "string", "contentEncoding": "binary", "maxLength": 10485760 } } } }, "401": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": { "clipboardSession": { "type": "http", "scheme": "bearer", "bearerFormat": "smc_<43 base64url characters>" } },
+    "parameters": {
+      "ItemId": { "name": "itemId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ApiId" } },
+      "RequestId": { "name": "requestId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ApiId" } }
+    },
+    "requestBodies": {
+      "Login": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginRequest" } } } }
+    },
+    "responses": {
+      "Error": { "description": "Stable machine-readable failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "ApiId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+      "Sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+      "Timestamp": { "type": "string", "format": "date-time" },
+      "LoginRequest": { "type": "object", "required": ["username", "password", "device_id", "device_name"], "properties": { "username": { "type": "string", "minLength": 1, "maxLength": 64 }, "password": { "type": "string", "minLength": 1, "maxLength": 256 }, "device_id": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" }, "device_name": { "type": "string", "minLength": 1, "maxLength": 80 } }, "additionalProperties": false },
+      "LoginResponse": { "type": "object", "required": ["token", "user", "session_id", "expires_at"], "properties": { "token": { "type": "string", "pattern": "^smc_[A-Za-z0-9_-]{43}$" }, "user": { "$ref": "#/components/schemas/User" }, "session_id": { "type": "string", "format": "uuid" }, "expires_at": { "$ref": "#/components/schemas/Timestamp" } }, "additionalProperties": false },
+      "User": { "type": "object", "required": ["username", "display_name"], "properties": { "username": { "type": "string" }, "display_name": { "type": "string" } }, "additionalProperties": false },
+      "Me": { "type": "object", "required": ["username", "display_name", "device_id"], "properties": { "username": { "type": "string" }, "display_name": { "type": "string" }, "device_id": { "$ref": "#/components/schemas/ApiId" } }, "additionalProperties": false },
+      "PasswordChange": { "type": "object", "required": ["current_password", "new_password"], "properties": { "current_password": { "type": "string", "minLength": 8, "maxLength": 256 }, "new_password": { "type": "string", "minLength": 8, "maxLength": 256 } }, "additionalProperties": false },
+      "Space": { "type": "object", "required": ["id", "name", "is_default", "retention_days", "max_items"], "properties": { "id": { "const": "personal" }, "name": { "type": "string" }, "is_default": { "const": true }, "retention_days": { "const": 7 }, "max_items": { "const": 500 } }, "additionalProperties": false },
+      "PublishItem": { "type": "object", "required": ["client_event_id", "space_id", "kind", "text"], "properties": { "client_event_id": { "$ref": "#/components/schemas/ApiId" }, "space_id": { "const": "personal" }, "kind": { "enum": ["text", "url", "file", "image"] }, "text": { "type": "string", "minLength": 1, "maxLength": 65536 }, "filename": { "type": "string", "minLength": 1, "maxLength": 255 }, "mime_type": { "type": "string", "minLength": 3, "maxLength": 127 }, "size_bytes": { "type": "integer", "minimum": 1, "maximum": 10485760 }, "thumbnail_base64": { "type": "string", "contentEncoding": "base64", "maxLength": 358400 }, "thumbnail_mime_type": { "enum": ["image/jpeg", "image/png"] } }, "additionalProperties": false },
+      "ClipboardItem": { "type": "object", "required": ["id", "space_id", "origin_device_id", "kind", "text", "thumbnail_available", "created_at"], "properties": { "seq": { "type": "integer", "minimum": 1 }, "id": { "$ref": "#/components/schemas/ApiId" }, "space_id": { "const": "personal" }, "origin_device_id": { "$ref": "#/components/schemas/ApiId" }, "kind": { "enum": ["text", "url", "file", "image"] }, "text": { "type": "string" }, "filename": { "type": "string" }, "mime_type": { "type": "string" }, "size_bytes": { "type": "integer", "minimum": 1, "maximum": 10485760 }, "thumbnail_available": { "type": "boolean" }, "created_at": { "$ref": "#/components/schemas/Timestamp" } }, "additionalProperties": false },
+      "PublishedEvent": { "allOf": [{ "$ref": "#/components/schemas/ClipboardItem" }, { "type": "object", "required": ["type", "seq"], "properties": { "type": { "const": "published" }, "seq": { "type": "integer", "minimum": 1 } } }] },
+      "DeletedEvent": { "type": "object", "required": ["seq", "type", "item_id"], "properties": { "seq": { "type": "integer", "minimum": 1 }, "type": { "const": "deleted" }, "item_id": { "$ref": "#/components/schemas/ApiId" } }, "additionalProperties": false },
+      "Feed": { "type": "object", "required": ["events", "next_cursor", "has_more"], "properties": { "events": { "type": "array", "items": { "oneOf": [{ "$ref": "#/components/schemas/PublishedEvent" }, { "$ref": "#/components/schemas/DeletedEvent" }] } }, "next_cursor": { "type": "integer", "minimum": 0 }, "has_more": { "type": "boolean" } }, "additionalProperties": false },
+      "DeleteResult": { "type": "object", "required": ["deleted", "id", "seq"], "properties": { "deleted": { "const": true }, "id": { "$ref": "#/components/schemas/ApiId" }, "seq": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
+      "FileRequest": { "type": "object", "required": ["request_id", "status", "expires_at"], "properties": { "request_id": { "$ref": "#/components/schemas/ApiId" }, "status": { "enum": ["pending", "ready", "consumed"] }, "expires_at": { "$ref": "#/components/schemas/Timestamp" }, "content_sha256": { "$ref": "#/components/schemas/Sha256" } }, "additionalProperties": false },
+      "PendingFileRequest": { "type": "object", "required": ["id", "item_id", "requester_device_id", "expires_at", "size_bytes"], "properties": { "id": { "$ref": "#/components/schemas/ApiId" }, "item_id": { "$ref": "#/components/schemas/ApiId" }, "requester_device_id": { "$ref": "#/components/schemas/ApiId" }, "expires_at": { "$ref": "#/components/schemas/Timestamp" }, "size_bytes": { "type": "integer", "minimum": 1, "maximum": 10485760 } }, "additionalProperties": false },
+      "FileReady": { "type": "object", "required": ["request_id", "status", "content_sha256"], "properties": { "request_id": { "$ref": "#/components/schemas/ApiId" }, "status": { "const": "ready" }, "content_sha256": { "$ref": "#/components/schemas/Sha256" } }, "additionalProperties": false },
+      "Error": { "type": "object", "required": ["error"], "properties": { "error": { "type": "string", "enum": ["unauthorized", "invalid_credentials", "invalid_request", "invalid_json", "content_type_invalid", "payload_too_large", "clipboard_item_too_large", "invalid_url", "file_metadata_invalid", "thumbnail_invalid", "quota_exceeded", "idempotency_conflict", "clipboard_item_deleted", "not_found", "file_too_large", "file_size_mismatch", "file_content_mismatch", "password_invalid", "clipboard_unavailable"] } }, "additionalProperties": false }
+    }
+  }
+}

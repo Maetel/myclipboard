@@ -1,12 +1,13 @@
 {
   "name": "mymemo-clipboard",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
+    "test:contract": "node scripts/contract.test.mjs",
     "test:windows-idle": "node scripts/windows-idle.test.mjs",
     "test:ux": "node scripts/ux-regression.test.mjs",
     "tauri": "tauri",

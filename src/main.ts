@@ -5,7 +5,6 @@ import './style.css';
 interface PublicSettings {
   server_url: string; username: string; display_name: string; logged_in: boolean;
   enabled: boolean; shortcut: string; device_name: string;
-  account_migration_required: boolean;
 }
 interface ClipboardItem { id: string; kind: 'text'|'url'|'file'|'image'; text: string; filename?: string; created_at: string; size_bytes?: number }
 
@@ -135,9 +134,6 @@ async function load(showStartup = false) {
   startupPanel.hidden = true;
   appShell.removeAttribute('aria-busy');
   if (settings.logged_in) void refreshHistory();
-  if (settings.account_migration_required) {
-    setMessage('기존 복사 기록은 마이메모로 옮겼습니다. 같은 마이메모 계정으로 다시 로그인해 주세요.');
-  }
 }
 
 element('loginForm').addEventListener('submit', async (event) => {

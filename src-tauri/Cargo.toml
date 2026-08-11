@@ -1,8 +1,8 @@
 [package]
 name = "mymemo-clipboard"
-version = "0.2.4"
-description = "Cross-device clipboard history for Jamserver accounts"
-authors = ["Jamserver"]
+version = "0.2.5"
+description = "Cross-device clipboard history for MyMemo accounts"
+authors = ["MyMemo Clipboard contributors"]
 edition = "2021"
 
 [lib]

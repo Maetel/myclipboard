@@ -44,7 +44,6 @@ pub struct Settings {
     pub device_name: String,
     pub enabled: bool,
     pub shortcut: String,
-    pub account_migration_required: bool,
 }
 
 impl Default for Settings {
@@ -57,7 +56,6 @@ impl Default for Settings {
             device_name: default_device_name(),
             enabled: true,
             shortcut: DEFAULT_SHORTCUT.into(),
-            account_migration_required: false,
         }
     }
 }
@@ -71,7 +69,6 @@ struct PublicSettings {
     logged_in: bool,
     enabled: bool,
     shortcut: String,
-    account_migration_required: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,7 +153,7 @@ fn secret_filename(account: &str) -> Result<&'static str, String> {
 fn valid_secret_value(account: &str, value: &str) -> bool {
     match account {
         SESSION_KEY => {
-            value.len() == 47 && (value.starts_with("smc_") || value.starts_with("jmc_"))
+            value.len() == 47 && value.starts_with("smc_")
         }
         HISTORY_KEY => value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
         _ => false,
@@ -512,7 +509,7 @@ pub(crate) fn http_client() -> Result<reqwest::blocking::Client, String> {
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
-        .user_agent("mymemo-clipboard/0.2.4");
+        .user_agent("mymemo-clipboard/0.2.5");
     #[cfg(target_os = "windows")]
     let builder = builder.pool_max_idle_per_host(0);
     builder
@@ -525,7 +522,7 @@ pub(crate) fn file_http_client() -> Result<reqwest::blocking::Client, String> {
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(90))
-        .user_agent("mymemo-clipboard/0.2.4");
+        .user_agent("mymemo-clipboard/0.2.5");
     #[cfg(target_os = "windows")]
     let builder = builder.pool_max_idle_per_host(0);
     builder
@@ -554,20 +551,7 @@ pub(crate) fn clear_local_auth(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 fn load_settings_blocking(app: tauri::AppHandle) -> Result<PublicSettings, String> {
-    let mut settings = read_settings(&app)?;
-    if reqwest::Url::parse(&settings.server_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_owned))
-        .as_deref()
-        == Some("admin.memos.my")
-    {
-        clear_local_auth(&app)?;
-        settings.server_url = DEFAULT_SERVER.into();
-        settings.username.clear();
-        settings.display_name.clear();
-        settings.account_migration_required = true;
-        write_settings(&app, &settings)?;
-    }
+    let settings = read_settings(&app)?;
     let token = session_token()?;
     Ok(PublicSettings {
         server_url: settings.server_url,
@@ -577,7 +561,6 @@ fn load_settings_blocking(app: tauri::AppHandle) -> Result<PublicSettings, Strin
         logged_in: !token.is_empty(),
         enabled: settings.enabled,
         shortcut: settings.shortcut,
-        account_migration_required: settings.account_migration_required,
     })
 }
 
@@ -615,9 +598,7 @@ fn login_blocking(
     let result: LoginResponse = response
         .json()
         .map_err(|_| "로그인 응답이 올바르지 않습니다.".to_string())?;
-    if !(result.token.starts_with("smc_") || result.token.starts_with("jmc_"))
-        || result.token.len() != 47
-    {
+    if !result.token.starts_with("smc_") || result.token.len() != 47 {
         return Err("로그인 응답이 올바르지 않습니다.".into());
     }
     if settings.username != result.user.username
@@ -630,7 +611,6 @@ fn login_blocking(
     settings.username = result.user.username;
     settings.display_name = result.user.display_name;
     settings.enabled = true;
-    settings.account_migration_required = false;
     write_settings(&app, &settings)?;
     clipboard::apply_shortcut(&app, &settings)?;
     let _ = app.emit("sync-status", "동기화 준비됨");
@@ -917,7 +897,6 @@ mod tests {
             endpoint("https://memos.my", "/feed").unwrap().as_str(),
             "https://memos.my/api/clipboard/v1/feed"
         );
-        assert!(endpoint("https://admin.memos.my", "/feed").is_err());
         assert!(endpoint("https://attacker.example", "/login").is_err());
         assert!(endpoint("https://memos.my.attacker.example", "/login").is_err());
         assert!(endpoint("https://memos.my:8443", "/login").is_err());
@@ -939,10 +918,7 @@ mod tests {
             SESSION_KEY,
             &format!("smc_{}", "A".repeat(43))
         ));
-        assert!(valid_secret_value(
-            SESSION_KEY,
-            &format!("jmc_{}", "z".repeat(43))
-        ));
+        assert!(!valid_secret_value(SESSION_KEY, &format!("legacy_{}", "z".repeat(40))));
         assert!(valid_secret_value(HISTORY_KEY, &"a1".repeat(32)));
         assert!(!valid_secret_value(SESSION_KEY, "smc_short"));
         assert!(!valid_secret_value(HISTORY_KEY, &"g0".repeat(32)));

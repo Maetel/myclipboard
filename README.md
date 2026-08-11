@@ -75,7 +75,7 @@ npm run desktop:package-macos-dmg
 
 ## 서버 연동 방식
 
-앱은 마이메모 origin의 `/api/clipboard/v1`을 사용합니다. 로그인은 아이디·비밀번호·기기 ID를 보내며, 성공하면 90일 앱 전용 세션을 받습니다. 이후 요청은 그 세션을 Bearer 인증으로 전송합니다. 이전 `admin.memos.my` 설정을 발견하면 이관된 기록을 유지한 채 로컬 세션을 정리하고 마이메모 계정 재로그인을 안내합니다.
+앱은 마이메모 origin의 `/api/clipboard/v1`만 사용합니다. 로그인은 아이디·비밀번호·기기 ID를 보내며, 성공하면 `smc_` 형식의 90일 앱 전용 세션을 받습니다. 이후 요청은 그 세션을 Bearer 인증으로 전송합니다.
 
 - `POST /login`, `POST /logout`, `POST /password`, `GET /me`
 - `GET /spaces`, `POST /items`, `GET /feed`, `DELETE /items/:id`, `GET /items/:id/thumbnail`
@@ -84,3 +84,4 @@ npm run desktop:package-macos-dmg
 서버가 로그인 세션을 폐기하거나 사용자를 중지하면 다음 동기화부터 접근이 거부됩니다. 앱은 서버 응답 본문이나 세션 원문을 로그로 남기지 않습니다.
 
 구체적인 Windows 사용 흐름과 검증 기준은 [`docs/USER_SCENARIOS.md`](docs/USER_SCENARIOS.md)에 정리되어 있습니다.
+버전이 고정된 요청·응답 형식은 [`contracts/clipboard-v1.openapi.json`](contracts/clipboard-v1.openapi.json)에 있으며 SmallMemo 저장소의 같은 파일과 byte 단위로 일치해야 합니다. 두 저장소는 이 문서 외의 source나 package를 공유하지 않습니다.
