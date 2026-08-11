@@ -22,6 +22,22 @@ macOS에서는 기록·썸네일·파일 전송과 로컬 로그인 정보 확�
 
 Windows가 Clipboard 기록이나 다른 기기 동기화에서 제외하라고 표시한 내용은 앱도 캡처하지 않습니다. 릴리스 앱의 로그인·동기화 origin은 exact `https://memos.my`로 고정하며, 로그인 화면에서 다른 서버로 계정 정보를 보내는 설정은 제공하지 않습니다.
 
+## CLI로 macOS 설치
+
+macOS 터미널에서 저장소를 받은 뒤 아래 명령 한 번으로 현재 소스를 빌드하고 설치할 수 있습니다.
+
+```bash
+npm run desktop:install:macos
+```
+
+앱은 현재 사용자 전용 `~/Applications/MyMemo Clipboard.app`에 설치되므로 `sudo`나 macOS 로그인 비밀번호가 필요하지 않습니다. 기존 MyMemo Clipboard가 있으면 앱 식별자를 확인한 뒤 안전하게 교체하고 새 앱을 실행합니다. 이미 빌드된 `.app`을 설치하거나 설치 뒤 자동 실행을 원하지 않으면 다음처럼 실행합니다.
+
+```bash
+bash scripts/install-macos.sh --app "/path/to/MyMemo Clipboard.app" --no-launch
+```
+
+이 명령은 소스 또는 로컬 앱 파일을 설치하는 개발·내부 배포 경로입니다. 누구나 `brew install --cask`로 설치하는 공개 배포는 Developer ID 서명과 notarization을 마친 릴리스 파일을 먼저 준비해야 합니다.
+
 ## 저장소에서 바로 실행
 
 macOS에서는 저장소의 `MyMemo Clipboard Dev.command`를 더블클릭하면 앱을 개발 모드로 바로 실행합니다. `Applications` 폴더에 복사하거나 매번 데스크톱 빌드를 만들 필요가 없습니다. 실행할 때마다 `main`의 최신 코드를 `git pull --ff-only`로 확인하고, 필요한 경우 의존성도 다시 설치합니다. 로컬에서 수정 중인 파일이 있거나 다른 브랜치에 있으면 파일을 덮어쓰지 않고 자동 업데이트만 건너뜁니다. 네트워크 문제로 업데이트하지 못해도 이미 받아 둔 코드로 실행합니다.
