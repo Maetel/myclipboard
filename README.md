@@ -24,7 +24,21 @@ Windows가 Clipboard 기록이나 다른 기기 동기화에서 제외하라고 
 
 ## CLI로 macOS 설치
 
-macOS 터미널에서 저장소를 받은 뒤 아래 명령 한 번으로 현재 소스를 빌드하고 설치할 수 있습니다.
+macOS 터미널에서 아래 한 줄로 최신 소스를 임시 폴더에 받고 빌드·설치할 수 있습니다.
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Maetel/myclipboard/main/install.sh | bash
+```
+
+받은 스크립트를 먼저 확인하고 실행하려면 다음처럼 두 단계로 나눕니다.
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSLo /tmp/mymemo-clipboard-install.sh https://raw.githubusercontent.com/Maetel/myclipboard/main/install.sh
+less /tmp/mymemo-clipboard-install.sh
+bash /tmp/mymemo-clipboard-install.sh
+```
+
+이미 저장소를 받은 경우에는 아래 명령만 실행하면 됩니다.
 
 ```bash
 npm run desktop:install:macos
