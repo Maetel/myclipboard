@@ -39,6 +39,13 @@ function dependenciesChanged(before, after) {
   return changed.status === 0 && Boolean(changed.stdout.trim());
 }
 
+function hasLocalChanges() {
+  const unstaged = git(['diff', '--quiet', '--ignore-submodules', '--']);
+  const staged = git(['diff', '--cached', '--quiet', '--ignore-submodules', '--']);
+  const untracked = git(['ls-files', '--others', '--exclude-standard']);
+  return unstaged.status !== 0 || staged.status !== 0 || untracked.status !== 0 || Boolean(untracked.stdout.trim());
+}
+
 function installDependencies() {
   console.log('개발 의존성을 맞추고 있습니다…');
   const command = existsSync(path.join(repo, 'package-lock.json')) ? ['ci'] : ['install'];
@@ -52,8 +59,7 @@ function updateWorkingTree() {
     console.log(`main 브랜치가 아니어서 자동 업데이트를 건너뜁니다. 현재: ${branch || '분리된 checkout'}`);
     return { updated: false, dependencies: false };
   }
-  const status = git(['status', '--porcelain', '--untracked-files=normal']);
-  if (status.status !== 0 || status.stdout.trim()) {
+  if (hasLocalChanges()) {
     console.log('로컬 수정 사항이 있어 자동 업데이트를 건너뜁니다. 실행 중인 앱은 그대로 유지합니다.');
     return { updated: false, dependencies: false };
   }
