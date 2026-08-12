@@ -39,6 +39,7 @@ assert.match(main, /history_limit: number/);
 assert.match(main, /historyLimit: input\('historyLimit'\)\.valueAsNumber/);
 assert.match(app, /DEFAULT_HISTORY_LIMIT: usize = 200/);
 assert.match(clipboard, /state\.items\.truncate\(settings\.history_limit\)/);
+assert.match(clipboard, /deduplicate_text_history\(load_state\(&app\)\?\.items\)/);
 assert.match(main, /startupPanel\.hidden = true/);
 assert.doesNotMatch(main, /보안 저장소 확인 창|Keychain|키체인/);
 assert.match(app, /MACOS_SECRET_ROOT/);

@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Condvar;
 use std::{
     borrow::Cow,
+    collections::HashSet,
     fs,
     io::Cursor,
     path::{Path, PathBuf},
@@ -1359,7 +1360,17 @@ pub fn clipboard_dismiss(app: tauri::AppHandle) {
 }
 
 fn clipboard_history_blocking(app: tauri::AppHandle) -> Result<Vec<ClipboardItem>, String> {
-    Ok(load_state(&app)?.items)
+    Ok(deduplicate_text_history(load_state(&app)?.items))
+}
+
+fn deduplicate_text_history(items: Vec<ClipboardItem>) -> Vec<ClipboardItem> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| {
+            !matches!(item.kind.as_str(), "text" | "url") || seen.insert(item.text.clone())
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -1965,12 +1976,48 @@ fn paste_to_foreground() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn history_item(id: &str, kind: &str, text: &str) -> ClipboardItem {
+        ClipboardItem {
+            seq: 0,
+            id: id.into(),
+            space_id: "personal".into(),
+            origin_device_id: "device-test".into(),
+            kind: kind.into(),
+            text: text.into(),
+            filename: (kind == "file").then(|| text.into()),
+            mime_type: None,
+            size_bytes: None,
+            thumbnail_available: false,
+            created_at: "2026-08-12T00:00:00Z".into(),
+        }
+    }
+
     #[test]
     fn shortcut_validation() {
         assert!(validate_shortcut(DEFAULT_SHORTCUT).is_ok());
         assert!(validate_shortcut("Command+Shift+C").is_ok());
         assert!(validate_shortcut("V").is_err());
         assert!(validate_shortcut("Ctrl+Shift").is_err());
+    }
+
+    #[test]
+    fn repeated_text_is_shown_once_with_the_newest_item() {
+        let visible = deduplicate_text_history(vec![
+            history_item("newest", "text", "같은 내용"),
+            history_item("file-1", "file", "같은 내용"),
+            history_item("older", "text", "같은 내용"),
+            history_item("spaced", "text", "같은 내용 "),
+            history_item("file-2", "file", "같은 내용"),
+        ]);
+
+        assert_eq!(
+            visible
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["newest", "file-1", "spaced", "file-2"]
+        );
     }
 
     #[test]
