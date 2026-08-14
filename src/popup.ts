@@ -282,6 +282,7 @@ void listen('clipboard-open', () => {
   dismissing = false;
   selecting = false;
   selectionId = '';
+  selectedId = '';
   list.removeAttribute('aria-busy');
   search.value = '';
   refreshQueued = true;
